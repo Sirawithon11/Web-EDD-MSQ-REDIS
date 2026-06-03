@@ -106,22 +106,38 @@ npm run dev
 
 ---
 
-## Seed data (medium size)
+## Seed data (enterprise scale)
 
-Each `npm run seed` loads a realistic medium-size dataset:
+Each `npm run seed` loads an enterprise-scale dataset (all sizes are
+env-overridable — see below):
 
-- **user-service** — ~50 users (1 admin: `admin@shop.dev` / `admin123`)
-- **product-service** — ~120 products across 8 categories
-- **shopping-service** — ~200 orders with line items referencing seeded user & product IDs
+- **user-service** — ~100k users (1 admin; the rest `userN@shop.dev` / `password123`)
+- **product-service** — ~20k products across 8 categories
+- **shopping-service** — ~500k orders (~1.5M line items) + ~5k active carts, referencing seeded user & product IDs
+
+For performance the seeds use batched `createMany` and reuse a single bcrypt
+hash for the shared user password (hashing every user individually would take
+hours). Override the scale with env vars, e.g.:
+
+```bash
+docker compose exec -e SEED_PRODUCTS=5000 product-service  npm run seed
+docker compose exec -e SEED_USERS=10000   user-service     npm run seed
+docker compose exec -e SEED_USERS=10000 -e SEED_ORDERS=50000 shopping-service npm run seed
+```
+
+Supported vars: `SEED_USERS`, `SEED_USER_PASSWORD`, `SEED_PRODUCTS`,
+`SEED_ORDERS`, `SEED_CARTS`, `SEED_SAMPLE`. Keep `SEED_USERS` consistent between
+the user and shopping seeds so order `userId`s stay in range, and seed
+product-service **before** shopping-service.
 
 ---
 
 ## Default credentials
 
-| Role  | Email             | Password   |
-|-------|-------------------|------------|
-| Admin | admin@shop.dev    | admin123   |
-| User  | user1@shop.dev    | password1  |
+| Role  | Email             | Password     |
+|-------|-------------------|--------------|
+| Admin | admin@shop.dev    | admin123     |
+| User  | user1@shop.dev    | password123  |
 
 ---
 
@@ -186,3 +202,5 @@ service/
 ├── Dockerfile
 └── package.json
 ```
+
+

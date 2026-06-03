@@ -17,6 +17,22 @@ model Category {
   @@map("categories")
 }
 
+// Audit trail of admin actions on products. Append-only; one row per action.
+model AuditLog {
+  id         Int      @id @default(autoincrement())
+  actorId    Int      // admin user id (from JWT)
+  actorEmail String
+  action     String   // CREATE | UPDATE | DELETE
+  entity     String   @default("PRODUCT")
+  entityId   Int?     // product id the action targeted
+  details    Json?    // payload / before-after snapshot
+  createdAt  DateTime @default(now())
+
+  @@index([entityId])
+  @@index([actorId])
+  @@map("audit_logs")
+}
+
 model Product {
   id          Int      @id @default(autoincrement())
   name        String

@@ -7,10 +7,17 @@ const router = Router();
 // public catalog
 router.get("/categories", ctrl.listCategories);
 router.get("/", ctrl.list);
+
+// admin listing (includes inactive products) — must precede "/:id"
+router.get("/admin", authenticate, requireAdmin, ctrl.adminList);
+router.get("/audit-logs", authenticate, requireAdmin, ctrl.listAuditLogs);
+
 router.get("/:id", ctrl.getById);
 
 // internal (used by shopping-service)
 router.post("/bulk", ctrl.bulkByIds);
+router.post("/decrement-stock", ctrl.decrementStock);
+router.post("/restock", ctrl.restock);
 
 // admin management
 router.post("/", authenticate, requireAdmin, ctrl.create);

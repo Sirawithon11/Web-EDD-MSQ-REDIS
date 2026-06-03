@@ -35,6 +35,17 @@ function OrdersList() {
       .finally(() => setLoading(false));
   }, [user, authLoading, router]);
 
+  async function handleDelete(id) {
+    if (!confirm(`Delete order #${id}? This cannot be undone.`)) return;
+    setError("");
+    try {
+      await api.deleteOrder(id);
+      setOrders((prev) => prev.filter((o) => o.id !== id));
+    } catch (e) {
+      setError(e.message);
+    }
+  }
+
   if (authLoading || loading) return <p className="muted">Loading...</p>;
 
   return (
@@ -59,6 +70,9 @@ function OrdersList() {
               <span className="muted">{new Date(order.createdAt).toLocaleDateString()}</span>
               <span className="spacer" style={{ flex: 1 }} />
               <strong className="price">${Number(order.total).toFixed(2)}</strong>
+              <button className="btn btn-danger" onClick={() => handleDelete(order.id)}>
+                Delete
+              </button>
             </div>
             <div style={{ marginTop: 10 }}>
               {order.items.map((item) => (

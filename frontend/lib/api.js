@@ -39,6 +39,19 @@ export const api = {
   getProduct: (id) => request(`/api/products/${id}`),
   listCategories: () => request("/api/products/categories"),
 
+  // products — admin only (gateway forwards JWT; product-service enforces ADMIN)
+  adminListProducts: (query = "") => request(`/api/products/admin${query}`, { auth: true }),
+  createProduct: (payload) =>
+    request("/api/products", { method: "POST", body: payload, auth: true }),
+  updateProduct: (id, payload) =>
+    request(`/api/products/${id}`, { method: "PUT", body: payload, auth: true }),
+  deleteProduct: (id) =>
+    request(`/api/products/${id}`, { method: "DELETE", auth: true }),
+
+  // admin audit logs
+  listProductAuditLogs: (query = "") => request(`/api/products/audit-logs${query}`, { auth: true }),
+  listOrderAuditLogs: (query = "") => request(`/api/orders/audit-logs${query}`, { auth: true }),
+
   // cart
   getCart: () => request("/api/cart", { auth: true }),
   addToCart: (productId, quantity = 1) =>
@@ -52,6 +65,12 @@ export const api = {
   checkout: () => request("/api/orders", { method: "POST", auth: true }),
   listOrders: () => request("/api/orders", { auth: true }),
   getOrder: (id) => request(`/api/orders/${id}`, { auth: true }),
+  deleteOrder: (id) => request(`/api/orders/${id}`, { method: "DELETE", auth: true }),
+
+  // orders — admin only
+  adminListOrders: (query = "") => request(`/api/orders/all${query}`, { auth: true }),
+  updateOrderStatus: (id, status) =>
+    request(`/api/orders/${id}/status`, { method: "PATCH", body: { status }, auth: true }),
 };
 
 export { API_URL };

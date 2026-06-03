@@ -83,6 +83,7 @@ services:
     environment:
       PORT: 4002
       DATABASE_URL: postgresql://postgres:postgres@product-db:5432/product_db?schema=public
+      JWT_SECRET: super-secret-change-me
     ports:
       - "4002:4002"
     depends_on:

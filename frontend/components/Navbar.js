@@ -5,6 +5,7 @@ import { useAuth } from "@/context/AuthContext";
 
 export default function Navbar() {
   const { user, logout } = useAuth();
+  const isAdmin = user?.role === "ADMIN";
 
   return (
     <nav className="navbar">
@@ -14,10 +15,13 @@ export default function Navbar() {
         </Link>
         <div className="nav-links">
           <Link href="/">Products</Link>
-          <Link href="/cart">Cart</Link>
+          {!isAdmin && <Link href="/cart">Cart</Link>}
           {user ? (
             <>
-              <Link href="/orders">Orders</Link>
+              {!isAdmin && <Link href="/orders">Orders</Link>}
+              {isAdmin && <Link href="/admin/products">Admin</Link>}
+              {isAdmin && <Link href="/admin/orders">Orders</Link>}
+              {isAdmin && <Link href="/admin/logs">Logs</Link>}
               <span className="muted">Hi, {user.name?.split(" ")[0]}</span>
               <button className="btn btn-ghost" onClick={logout}>
                 Logout

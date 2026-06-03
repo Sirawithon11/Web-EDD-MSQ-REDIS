@@ -59,19 +59,21 @@ export default function ProductDetailPage() {
         <p className="muted">SKU: {product.sku}</p>
         <p className="muted">{product.stock > 0 ? `${product.stock} in stock` : "Out of stock"}</p>
 
-        <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 16 }}>
-          <input
-            type="number"
-            min="1"
-            max={product.stock}
-            value={quantity}
-            onChange={(e) => setQuantity(Math.max(1, Number(e.target.value)))}
-            style={{ width: 70, padding: 8, borderRadius: 8, border: "1px solid var(--border)" }}
-          />
-          <button className="btn" onClick={addToCart} disabled={adding || product.stock <= 0}>
-            {adding ? "Adding..." : "Add to cart"}
-          </button>
-        </div>
+        {user?.role !== "ADMIN" && (
+          <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 16 }}>
+            <input
+              type="number"
+              min="1"
+              max={product.stock}
+              value={quantity}
+              onChange={(e) => setQuantity(Math.max(1, Number(e.target.value)))}
+              style={{ width: 70, padding: 8, borderRadius: 8, border: "1px solid var(--border)" }}
+            />
+            <button className="btn" onClick={addToCart} disabled={adding || product.stock <= 0}>
+              {adding ? "Adding..." : "Add to cart"}
+            </button>
+          </div>
+        )}
         {message && <p style={{ color: "green", marginTop: 10 }}>{message}</p>}
         {error && <p className="error">{error}</p>}
       </div>

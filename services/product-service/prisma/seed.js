@@ -1,7 +1,16 @@
-// Seeds 8 categories and ~120 products with medium-size realistic data.
+// Seeds categories and an enterprise-scale catalog of products.
+//
+// Scale is env-overridable:
+//   SEED_PRODUCTS  number of products (default 20000)
+//
+// Products are round-robin distributed across the categories and inserted with
+// batched createMany. slug/sku are made unique with a global counter.
 const { PrismaClient } = require("@prisma/client");
 
 const prisma = new PrismaClient();
+
+const NUM_PRODUCTS = Number(process.env.SEED_PRODUCTS || 20000);
+const BATCH = 5000;
 
 const CATEGORIES = [
   { name: "Electronics", slug: "electronics" },
@@ -26,7 +35,7 @@ const WORDS = {
   "beauty-health": ["Vitamin C Serum", "Electric Toothbrush", "Hair Dryer", "Facial Cleanser", "Sunscreen SPF50", "Massage Gun", "Body Lotion", "Lip Balm Set"],
 };
 
-const BRANDS = ["Acme", "Nova", "Zenith", "Apex", "Lumen", "Vertex", "Orbit", "Pulse"];
+const BRANDS = ["Acme", "Nova", "Zenith", "Apex", "Lumen", "Vertex", "Orbit", "Pulse", "Helix", "Quartz"];
 
 function slugify(text) {
   return text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
@@ -36,8 +45,12 @@ function price(min, max) {
   return (Math.random() * (max - min) + min).toFixed(2);
 }
 
+function randInt(min, max) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
 async function main() {
-  console.log("Seeding products...");
+  console.log(`Seeding ${NUM_PRODUCTS.toLocaleString()} products...`);
 
   await prisma.product.deleteMany();
   await prisma.category.deleteMany();
@@ -48,32 +61,40 @@ async function main() {
     categoryMap[c.slug] = created.id;
   }
 
-  const products = [];
-  let counter = 1;
-  for (const [slug, names] of Object.entries(WORDS)) {
-    // ~15 products per category -> ~120 total
-    for (let i = 0; i < 15; i++) {
-      const base = names[i % names.length];
-      const brand = BRANDS[(i + counter) % BRANDS.length];
-      const name = `${brand} ${base}${i >= names.length ? " v" + (Math.floor(i / names.length) + 1) : ""}`;
-      products.push({
-        name,
-        slug: slugify(name) + "-" + counter,
-        description: `${name} — high quality ${base.toLowerCase()} from ${brand}. Reliable, well reviewed, and built to last.`,
-        price: price(9.99, 899.99),
-        stock: Math.floor(Math.random() * 200) + 5,
-        imageUrl: `https://picsum.photos/seed/prod${counter}/400/400`,
-        sku: `SKU-${slug.slice(0, 3).toUpperCase()}-${String(counter).padStart(4, "0")}`,
-        categoryId: categoryMap[slug],
-      });
-      counter++;
+  const slugs = Object.keys(WORDS);
+  let buffer = [];
+  let created = 0;
+  for (let counter = 1; counter <= NUM_PRODUCTS; counter++) {
+    const slug = slugs[(counter - 1) % slugs.length]; // round-robin across categories
+    const names = WORDS[slug];
+    const base = names[counter % names.length];
+    const brand = BRANDS[counter % BRANDS.length];
+    const name = `${brand} ${base} #${counter}`;
+    buffer.push({
+      name,
+      slug: slugify(name) + "-" + counter,
+      description: `${name} — high quality ${base.toLowerCase()} from ${brand}. Reliable, well reviewed, and built to last.`,
+      price: price(9.99, 899.99),
+      stock: randInt(5, 500),
+      imageUrl: `https://picsum.photos/seed/prod${counter}/400/400`,
+      sku: `SKU-${slug.slice(0, 3).toUpperCase()}-${String(counter).padStart(6, "0")}`,
+      categoryId: categoryMap[slug],
+    });
+
+    if (buffer.length >= BATCH) {
+      await prisma.product.createMany({ data: buffer });
+      created += buffer.length;
+      buffer = [];
+      console.log(`  ...${created.toLocaleString()}/${NUM_PRODUCTS.toLocaleString()}`);
     }
   }
-
-  await prisma.product.createMany({ data: products });
+  if (buffer.length) {
+    await prisma.product.createMany({ data: buffer });
+    created += buffer.length;
+  }
 
   const total = await prisma.product.count();
-  console.log(`Done. ${CATEGORIES.length} categories, ${total} products in product_db.`);
+  console.log(`Done. ${CATEGORIES.length} categories, ${total.toLocaleString()} products in product_db.`);
 }
 
 main()
