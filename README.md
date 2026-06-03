@@ -1,0 +1,188 @@
+# Microservice E-Commerce Platform
+
+A microservice-based e-commerce website.
+
+- **Frontend** — React via **Next.js**
+- **API Gateway** — Express, single entry point that routes to the services and verifies JWTs
+- **3 backend services** — `user`, `product`, `shopping`, each an **Express** app
+- **Database** — **Postgres**, one database *per service* (DB-per-service pattern), accessed via **Prisma**
+- **Auth** — JWT issued by the user service, verified by the gateway & shopping service
+
+```
+                       ┌──────────────┐
+   browser ──────────► │   Frontend   │  Next.js  :3000
+                       └──────┬───────┘
+                              │  NEXT_PUBLIC_API_URL
+                              ▼
+                       ┌──────────────┐
+                       │   Gateway    │  Express  :8080   (verifies JWT)
+                       └──┬────┬───┬───┘
+            /api/users    │    │   │   /api/orders, /api/cart
+        ┌─────────────────┘    │   └────────────────────┐
+        ▼                      ▼                         ▼
+ ┌─────────────┐       ┌──────────────┐         ┌────────────────┐
+ │ user-service│       │product-service│        │shopping-service│
+ │   :4001     │       │    :4002     │         │     :4003      │
+ └──────┬──────┘       └──────┬───────┘         └───────┬────────┘
+        ▼                     ▼                         ▼
+   user_db :5433        product_db :5434          shopping_db :5435
+```
+
+## Tech stack
+
+| Layer        | Tech                                   |
+|--------------|----------------------------------------|
+| Frontend     | Next.js 14 (App Router), React 18      |
+| Gateway      | Express, http-proxy-middleware, JWT    |
+| Services     | Express, Prisma ORM                    |
+| Database     | PostgreSQL 16 (one per service)        |
+| Auth         | JWT (bcrypt-hashed passwords)          |
+| Orchestration| Docker Compose                         |
+
+## Ports
+
+| Component         | URL / Port              |
+|-------------------|-------------------------|
+| Frontend          | http://localhost:3000   |
+| Gateway           | http://localhost:8080   |
+| user-service      | http://localhost:4001   |
+| product-service   | http://localhost:4002   |
+| shopping-service  | http://localhost:4003   |
+| user_db (Postgres)| localhost:5433          |
+| product_db        | localhost:5434          |
+| shopping_db       | localhost:5435          |
+
+---
+
+## Quick start (Docker — recommended)
+
+```bash
+# 1. Build & start everything (each service auto-creates its tables on startup)
+docker compose up --build
+
+# 2. In another terminal, seed sample data.
+#    Order matters: products must exist before shopping seeds orders.
+docker compose exec user-service     npm run seed
+docker compose exec product-service  npm run seed
+docker compose exec shopping-service npm run seed
+```
+
+Then open **http://localhost:3000** and log in with `admin@shop.dev` / `admin123`.
+
+> Tables are created automatically via `prisma db push` when each service
+> container starts, so you only need to run the seeds above.
+
+---
+
+## Local development (without Docker for the apps)
+
+You still need Postgres. Easiest is to start just the databases:
+
+```bash
+docker compose up user-db product-db shopping-db
+```
+
+Then in each folder (`services/*`, `gateway`, `frontend`):
+
+```bash
+cp .env.example .env      # adjust if needed
+npm install
+```
+
+For each service:
+
+```bash
+npx prisma generate
+npx prisma db push        # create tables
+npm run seed              # load sample data
+npm run dev               # start with nodemon
+```
+
+Gateway & frontend:
+
+```bash
+npm run dev
+```
+
+---
+
+## Seed data (medium size)
+
+Each `npm run seed` loads a realistic medium-size dataset:
+
+- **user-service** — ~50 users (1 admin: `admin@shop.dev` / `admin123`)
+- **product-service** — ~120 products across 8 categories
+- **shopping-service** — ~200 orders with line items referencing seeded user & product IDs
+
+---
+
+## Default credentials
+
+| Role  | Email             | Password   |
+|-------|-------------------|------------|
+| Admin | admin@shop.dev    | admin123   |
+| User  | user1@shop.dev    | password1  |
+
+---
+
+## API overview (via gateway, prefix `/api`)
+
+### Users — `user-service`
+| Method | Path                | Auth | Description            |
+|--------|---------------------|------|------------------------|
+| POST   | /api/users/register | —    | Register, returns JWT  |
+| POST   | /api/users/login    | —    | Login, returns JWT     |
+| GET    | /api/users/me       | ✓    | Current user profile   |
+| GET    | /api/users          | ✓    | List users (admin)     |
+
+### Products — `product-service`
+| Method | Path                | Auth | Description            |
+|--------|---------------------|------|------------------------|
+| GET    | /api/products       | —    | List / filter products |
+| GET    | /api/products/:id   | —    | Product detail         |
+| POST   | /api/products       | ✓    | Create product (admin) |
+| PUT    | /api/products/:id   | ✓    | Update product (admin) |
+| DELETE | /api/products/:id   | ✓    | Delete product (admin) |
+
+### Shopping — `shopping-service`
+| Method | Path                | Auth | Description            |
+|--------|---------------------|------|------------------------|
+| GET    | /api/cart           | ✓    | Get current user cart  |
+| POST   | /api/cart/items     | ✓    | Add item to cart       |
+| DELETE | /api/cart/items/:id | ✓    | Remove cart item       |
+| POST   | /api/orders         | ✓    | Checkout cart -> order |
+| GET    | /api/orders         | ✓    | List user orders       |
+| GET    | /api/orders/:id     | ✓    | Order detail           |
+
+---
+
+## Project structure
+
+```
+.
+├── docker-compose.yml
+├── gateway/                  # Express API gateway + JWT verification
+├── services/
+│   ├── user-service/         # auth, users        (user_db)
+│   ├── product-service/      # catalog            (product_db)
+│   └── shopping-service/     # cart + orders      (shopping_db)
+└── frontend/                 # Next.js app
+```
+
+Each service folder contains:
+
+```
+service/
+├── prisma/
+│   ├── schema.prisma
+│   └── seed.js
+├── src/
+│   ├── index.js              # express bootstrap
+│   ├── prisma.js             # shared PrismaClient
+│   ├── routes/
+│   ├── controllers/
+│   └── middleware/
+├── .env.example
+├── Dockerfile
+└── package.json
+```

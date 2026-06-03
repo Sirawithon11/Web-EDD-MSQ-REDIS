@@ -1,0 +1,141 @@
+# ---------------------------------------------------------------------------
+# Microservice stack
+#   frontend (Next.js)  ->  gateway (Express)  ->  user / product / shopping
+#   each backend service owns its OWN Postgres database (DB-per-service)
+# ---------------------------------------------------------------------------
+
+services:
+  # ----------------------------- Databases -------------------------------
+  user-db:
+    image: postgres:16-alpine
+    container_name: user-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: user_db
+    ports:
+      - "5433:5432"
+    volumes:
+      - user-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  product-db:
+    image: postgres:16-alpine
+    container_name: product-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: product_db
+    ports:
+      - "5434:5432"
+    volumes:
+      - product-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  shopping-db:
+    image: postgres:16-alpine
+    container_name: shopping-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: shopping_db
+    ports:
+      - "5435:5432"
+    volumes:
+      - shopping-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ----------------------------- Services --------------------------------
+  user-service:
+    build: ./services/user-service
+    container_name: user-service
+    restart: unless-stopped
+    environment:
+      PORT: 4001
+      DATABASE_URL: postgresql://postgres:postgres@user-db:5432/user_db?schema=public
+      JWT_SECRET: super-secret-change-me
+      JWT_EXPIRES_IN: 1d
+    ports:
+      - "4001:4001"
+    depends_on:
+      user-db:
+        condition: service_healthy
+
+  product-service:
+    build: ./services/product-service
+    container_name: product-service
+    restart: unless-stopped
+    environment:
+      PORT: 4002
+      DATABASE_URL: postgresql://postgres:postgres@product-db:5432/product_db?schema=public
+    ports:
+      - "4002:4002"
+    depends_on:
+      product-db:
+        condition: service_healthy
+
+  shopping-service:
+    build: ./services/shopping-service
+    container_name: shopping-service
+    restart: unless-stopped
+    environment:
+      PORT: 4003
+      DATABASE_URL: postgresql://postgres:postgres@shopping-db:5432/shopping_db?schema=public
+      JWT_SECRET: super-secret-change-me
+      PRODUCT_SERVICE_URL: http://product-service:4002
+    ports:
+      - "4003:4003"
+    depends_on:
+      shopping-db:
+        condition: service_healthy
+
+  # ----------------------------- Gateway ---------------------------------
+  gateway:
+    build: ./gateway
+    container_name: gateway
+    restart: unless-stopped
+    environment:
+      PORT: 8080
+      JWT_SECRET: super-secret-change-me
+      USER_SERVICE_URL: http://user-service:4001
+      PRODUCT_SERVICE_URL: http://product-service:4002
+      SHOPPING_SERVICE_URL: http://shopping-service:4003
+    ports:
+      - "8080:8080"
+    depends_on:
+      - user-service
+      - product-service
+      - shopping-service
+
+  # ----------------------------- Frontend --------------------------------
+  frontend:
+    build: ./frontend
+    container_name: frontend
+    restart: unless-stopped
+    environment:
+      # browser talks to the gateway on the host
+      NEXT_PUBLIC_API_URL: http://localhost:8080
+    ports:
+      - "3000:3000"
+    depends_on:
+      - gateway
+
+volumes:
+  user-db-data:
+  product-db-data:
+  shopping-db-data:
