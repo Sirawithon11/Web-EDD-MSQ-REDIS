@@ -16,6 +16,12 @@ app.use(cors());
 app.use(morgan("dev"));
 // NOTE: no body parser here — bodies stream straight through to the services.
 
+// http-proxy-middleware v3 rewrites against req.url, which Express has already
+// stripped of the `app.use()` mount path. So inside each proxy the path is e.g.
+// "/categories", not "/api/products/categories". We prepend the service prefix
+// instead of trying to rewrite a "/api/..." prefix that is no longer present.
+const prefixWith = (base) => (path) => `${base}${path}`;
+
 // Fail fast on protected routes (services still re-verify the token themselves).
 function requireAuth(req, res, next) {
   const header = req.headers.authorization || "";
@@ -43,7 +49,7 @@ app.use(
   createProxyMiddleware({
     target: USER_SERVICE_URL,
     changeOrigin: true,
-    pathRewrite: { "^/api/users": "/users" },
+    pathRewrite: prefixWith("/users"),
   })
 );
 
@@ -53,7 +59,7 @@ app.use(
   createProxyMiddleware({
     target: PRODUCT_SERVICE_URL,
     changeOrigin: true,
-    pathRewrite: { "^/api/products": "/products" },
+    pathRewrite: prefixWith("/products"),
   })
 );
 
@@ -64,7 +70,7 @@ app.use(
   createProxyMiddleware({
     target: SHOPPING_SERVICE_URL,
     changeOrigin: true,
-    pathRewrite: { "^/api/cart": "/cart" },
+    pathRewrite: prefixWith("/cart"),
   })
 );
 
@@ -75,7 +81,7 @@ app.use(
   createProxyMiddleware({
     target: SHOPPING_SERVICE_URL,
     changeOrigin: true,
-    pathRewrite: { "^/api/orders": "/orders" },
+    pathRewrite: prefixWith("/orders"),
   })
 );
 

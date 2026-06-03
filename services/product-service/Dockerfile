@@ -16,5 +16,7 @@ COPY . .
 EXPOSE 4002
 
 # Create/sync tables on startup (idempotent), then launch the service.
-CMD ["sh", "-c", "npx prisma db push --skip-generate && npm run seed && npm start"]
+# Seeding is NOT run here so data persists across restarts.
+# Seed manually when needed:  docker compose exec product-service npm run seed
+CMD ["sh", "-c", "npx prisma db push --skip-generate && npm start"]
 
