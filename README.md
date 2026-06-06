@@ -172,6 +172,52 @@ product-service **before** shopping-service.
 
 ---
 
+## Event-driven design (no message queue)
+
+On top of the synchronous request path, the services communicate **asynchronously
+via domain events** using the **Transactional Outbox + HTTP relay** pattern — no
+Kafka/RabbitMQ/Redis broker involved.
+
+How it works (per service, in `src/events/`):
+
+1. **Outbox** — when a service changes state, it writes a row to its own
+   `outbox_events` table **inside the same DB transaction** as the change
+   (`publishEvent(tx, type, payload)`). The event can never be lost or diverge
+   from the data it describes.
+2. **Relay** (`relay.js`) — a background loop polls `outbox_events` for unsent
+   rows and **HTTP-POSTs** each to its subscribers' `/events` endpoint (routing
+   lives in `subscriptions.js`). Success → marked `PUBLISHED`; failure →
+   retried with attempt counting, then `FAILED`. Delivery is **at-least-once**.
+3. **Inbox** (`consumer.js`) — the `/events` endpoint dedupes via an
+   `inbox_events` table and runs the matching handler **in the same transaction**
+   as the dedupe insert, giving **effectively-once** processing. Requests carry a
+   shared `x-event-secret` header.
+
+### Events & reactions
+
+| Producer | Event | Consumer → effect |
+|----------|-------|-------------------|
+| user     | `user.registered` | *(no subscriber yet — emitted for future use)* |
+| product  | `product.created` / `product.updated` / `product.stock.changed` / `product.deleted` | **shopping** → maintains a local `product_projection` read model (CQRS) |
+| shopping | `order.placed` | **user** → `ordersCount`/`totalSpent`/`lastOrderAt`; **product** → `salesCount` |
+| shopping | `order.status.changed` / `order.deleted` | **user** & **product** → reverse the above when an order is cancelled/removed |
+
+The **shopping analytics** endpoints now read product data from the local
+`product_projection` (falling back to an HTTP call only for ids not yet
+projected) instead of calling product-service synchronously on every request.
+
+> The synchronous checkout saga (reserve stock in product-service, compensate on
+> failure) is **unchanged** — events are additive, for projections and side
+> effects, not for the stock-reservation critical path.
+
+New env vars: `EVENT_SECRET` (shared), `USER_SERVICE_URL` (shopping),
+`SHOPPING_SERVICE_URL` (product), plus optional tuning `OUTBOX_POLL_MS`,
+`OUTBOX_BATCH`, `OUTBOX_MAX_ATTEMPTS`. The new tables/columns are created
+automatically by `prisma db push` on container start (run `docker compose up
+--build` to pick them up).
+
+---
+
 ## Project structure
 
 ```

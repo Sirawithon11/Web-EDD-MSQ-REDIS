@@ -1,6 +1,7 @@
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const prisma = require("../prisma");
+const { publishEvent } = require("../events/outbox");
 
 function sign(user) {
   return jwt.sign(
@@ -28,8 +29,16 @@ async function register(req, res) {
   }
 
   const hashed = await bcrypt.hash(password, 10);
-  const user = await prisma.user.create({
-    data: { email, password: hashed, name, phone, address },
+  const user = await prisma.$transaction(async (tx) => {
+    const created = await tx.user.create({
+      data: { email, password: hashed, name, phone, address },
+    });
+    await publishEvent(tx, "user.registered", {
+      userId: created.id,
+      email: created.email,
+      name: created.name,
+    });
+    return created;
   });
 
   return res.status(201).json({ token: sign(user), user: publicUser(user) });

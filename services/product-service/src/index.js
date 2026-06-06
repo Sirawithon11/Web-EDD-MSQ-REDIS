@@ -3,6 +3,8 @@ const express = require("express");
 const cors = require("cors");
 const morgan = require("morgan");
 const productRoutes = require("./routes/products");
+const eventsRouter = require("./events/consumer");
+const { startRelay } = require("./events/relay");
 
 const app = express();
 const PORT = process.env.PORT || 4002;
@@ -15,6 +17,8 @@ app.use(morgan("dev"));
 app.get("/health", (req, res) => res.json({ status: "ok", service: "product-service" }));
 
 app.use("/products", productRoutes);
+// Inbound domain events from other services (secret-protected, internal).
+app.use("/events", eventsRouter);
 
 app.use((req, res) => res.status(404).json({ message: "Not found" }));
 
@@ -23,4 +27,7 @@ app.use((err, req, res, next) => {
   res.status(500).json({ message: "Internal server error" });
 });
 
-app.listen(PORT, () => console.log(`product-service listening on :${PORT}`));
+app.listen(PORT, () => {
+  console.log(`product-service listening on :${PORT}`);
+  startRelay();
+});

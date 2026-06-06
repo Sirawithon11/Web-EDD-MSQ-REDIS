@@ -1,5 +1,12 @@
 const prisma = require("../prisma");
 const { writeAudit } = require("../audit");
+const { publishEvent } = require("../events/outbox");
+
+// Shape a product row into the payload consumers (shopping projection) expect.
+// Decimals are coerced to plain numbers so they serialize into the JSON column.
+function productPayload(p) {
+  return { id: p.id, name: p.name, price: Number(p.price), stock: p.stock, active: p.active };
+}
 
 function slugify(text) {
   return text
@@ -132,6 +139,7 @@ async function create(req, res) {
       },
     });
     await writeAudit(tx, req, { action: "CREATE", entityId: created.id, details: { after: created } });
+    await publishEvent(tx, "product.created", productPayload(created));
     return created;
   });
   res.status(201).json(product);
@@ -156,6 +164,7 @@ async function update(req, res) {
         },
       });
       await writeAudit(tx, req, { action: "UPDATE", entityId: id, details: { before, after: updated } });
+      await publishEvent(tx, "product.updated", productPayload(updated));
       return updated;
     });
     res.json(product);
@@ -171,6 +180,7 @@ async function remove(req, res) {
       const before = await tx.product.findUnique({ where: { id } });
       await tx.product.delete({ where: { id } });
       await writeAudit(tx, req, { action: "DELETE", entityId: id, details: { before } });
+      await publishEvent(tx, "product.deleted", { productId: id });
     });
     res.status(204).end();
   } catch (err) {
@@ -224,6 +234,7 @@ async function decrementStock(req, res) {
           where: { id },
           data: { stock: { decrement: qty } },
         });
+        await publishEvent(tx, "product.stock.changed", { productId: u.id, stock: u.stock });
         results.push({ id: u.id, stock: u.stock });
       }
       return results;
@@ -247,14 +258,15 @@ async function decrementStock(req, res) {
 // POST /products/restock  { items: [{ productId, quantity }] }
 async function restock(req, res) {
   const items = Array.isArray(req.body.items) ? req.body.items : [];
-  await prisma.$transaction(
-    items.map((item) =>
-      prisma.product.update({
+  await prisma.$transaction(async (tx) => {
+    for (const item of items) {
+      const u = await tx.product.update({
         where: { id: Number(item.productId) },
         data: { stock: { increment: Number(item.quantity) } },
-      })
-    )
-  );
+      });
+      await publishEvent(tx, "product.stock.changed", { productId: u.id, stock: u.stock });
+    }
+  });
   res.json({ ok: true });
 }
 

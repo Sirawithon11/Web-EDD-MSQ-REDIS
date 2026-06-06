@@ -70,6 +70,8 @@ services:
       DATABASE_URL: postgresql://postgres:postgres@user-db:5432/user_db?schema=public
       JWT_SECRET: super-secret-change-me
       JWT_EXPIRES_IN: 1d
+      # event-driven (transactional outbox + HTTP relay)
+      EVENT_SECRET: super-secret-events
     ports:
       - "4001:4001"
     depends_on:
@@ -84,6 +86,9 @@ services:
       PORT: 4002
       DATABASE_URL: postgresql://postgres:postgres@product-db:5432/product_db?schema=public
       JWT_SECRET: super-secret-change-me
+      # event-driven: product.* events are delivered to shopping-service
+      SHOPPING_SERVICE_URL: http://shopping-service:4003
+      EVENT_SECRET: super-secret-events
     ports:
       - "4002:4002"
     depends_on:
@@ -99,6 +104,9 @@ services:
       DATABASE_URL: postgresql://postgres:postgres@shopping-db:5432/shopping_db?schema=public
       JWT_SECRET: super-secret-change-me
       PRODUCT_SERVICE_URL: http://product-service:4002
+      # event-driven: order.* events are delivered to user- & product-service
+      USER_SERVICE_URL: http://user-service:4001
+      EVENT_SECRET: super-secret-events
     ports:
       - "4003:4003"
     depends_on:

@@ -23,5 +23,41 @@ model User {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  // --- event-driven projection ---
+  // Kept up to date by consuming order.* events from shopping-service.
+  ordersCount Int       @default(0)
+  totalSpent  Decimal   @default(0) @db.Decimal(12, 2)
+  lastOrderAt DateTime?
+
   @@map("users")
+}
+
+// ---------------------------------------------------------------------------
+// Event-driven infrastructure (Transactional Outbox + HTTP relay, no broker)
+// ---------------------------------------------------------------------------
+
+// Domain events written in the SAME transaction as the business change, then
+// delivered to subscribers by the background relay. At-least-once delivery.
+model OutboxEvent {
+  id          Int       @id @default(autoincrement())
+  eventId     String    @unique // idempotency key carried to consumers
+  type        String // e.g. "user.registered"
+  payload     Json
+  status      String    @default("PENDING") // PENDING | PUBLISHED | FAILED
+  attempts    Int       @default(0)
+  lastError   String?
+  createdAt   DateTime  @default(now())
+  publishedAt DateTime?
+
+  @@index([status])
+  @@map("outbox_events")
+}
+
+// Records every event this service has processed so re-deliveries are no-ops.
+model InboxEvent {
+  eventId    String   @id
+  type       String
+  receivedAt DateTime @default(now())
+
+  @@map("inbox_events")
 }

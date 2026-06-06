@@ -1,5 +1,7 @@
 const prisma = require("../prisma");
-const { getProductsByIds } = require("../productClient");
+// Enrichment reads the local event-driven read model (with HTTP fallback)
+// rather than calling product-service synchronously on every report.
+const { getProductViews } = require("../productView");
 
 // Statuses that count as real revenue (a placed-but-cancelled order earns nothing).
 const REVENUE_STATUSES = ["PAID", "SHIPPED", "DELIVERED"];
@@ -109,7 +111,7 @@ async function salesReport(req, res) {
   // Cross-service hop — another reason this endpoint is a latency hotspot.
   let catalogue = {};
   try {
-    const products = await getProductsByIds(topProducts.map((r) => Number(r.product_id)));
+    const products = await getProductViews(topProducts.map((r) => Number(r.product_id)));
     catalogue = Object.fromEntries(products.map((p) => [p.id, p]));
   } catch (_) {
     /* best-effort: fall back to the snapshot name stored on the order item */
@@ -224,7 +226,7 @@ async function productAffinity(req, res) {
       const ids = [
         ...new Set(pairs.flatMap((r) => [Number(r.product_a), Number(r.product_b)])),
       ];
-      const products = await getProductsByIds(ids);
+      const products = await getProductViews(ids);
       catalogue = Object.fromEntries(products.map((p) => [p.id, p]));
     } catch (_) {
       /* best-effort: fall back to the snapshot name stored on the order item */

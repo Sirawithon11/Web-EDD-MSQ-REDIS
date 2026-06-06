@@ -67,6 +67,50 @@ model Order {
   @@map("orders")
 }
 
+// ---------------------------------------------------------------------------
+// Event-driven read model + infrastructure (no broker)
+// ---------------------------------------------------------------------------
+
+// Local copy of product-service catalogue data, kept fresh by consuming
+// product.* events. A CQRS read model: analytics reads from here instead of
+// making a synchronous cross-service call on every request.
+model ProductProjection {
+  id        Int      @id // mirrors product-service product id (no autoincrement)
+  name      String
+  price     Decimal  @db.Decimal(10, 2)
+  stock     Int      @default(0)
+  active    Boolean  @default(true)
+  updatedAt DateTime @updatedAt
+
+  @@map("product_projection")
+}
+
+// Domain events written in the SAME transaction as the business change, then
+// delivered to subscribers by the background relay. At-least-once delivery.
+model OutboxEvent {
+  id          Int       @id @default(autoincrement())
+  eventId     String    @unique // idempotency key carried to consumers
+  type        String // e.g. "order.placed"
+  payload     Json
+  status      String    @default("PENDING") // PENDING | PUBLISHED | FAILED
+  attempts    Int       @default(0)
+  lastError   String?
+  createdAt   DateTime  @default(now())
+  publishedAt DateTime?
+
+  @@index([status])
+  @@map("outbox_events")
+}
+
+// Records every event this service has processed so re-deliveries are no-ops.
+model InboxEvent {
+  eventId    String   @id
+  type       String
+  receivedAt DateTime @default(now())
+
+  @@map("inbox_events")
+}
+
 // Order items snapshot product data at purchase time.
 model OrderItem {
   id          Int     @id @default(autoincrement())

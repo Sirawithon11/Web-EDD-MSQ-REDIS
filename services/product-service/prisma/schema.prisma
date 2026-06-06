@@ -48,6 +48,40 @@ model Product {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
+  // Cumulative units sold, maintained by consuming order.* events. This is a
+  // popularity counter and is independent of `stock` (still set by the saga).
+  salesCount  Int      @default(0)
+
   @@index([categoryId])
   @@map("products")
+}
+
+// ---------------------------------------------------------------------------
+// Event-driven infrastructure (Transactional Outbox + HTTP relay, no broker)
+// ---------------------------------------------------------------------------
+// Note For Me : keep every events that pub and sub . There are status for telling that that event is used yet.
+// Domain events written in the SAME transaction as the business change, then
+// delivered to subscribers by the background relay. At-least-once delivery.
+model OutboxEvent {
+  id          Int       @id @default(autoincrement())
+  eventId     String    @unique // idempotency key carried to consumers
+  type        String // e.g. "product.created"
+  payload     Json
+  status      String    @default("PENDING") // PENDING | PUBLISHED | FAILED
+  attempts    Int       @default(0)
+  lastError   String?
+  createdAt   DateTime  @default(now())
+  publishedAt DateTime?
+
+  @@index([status])
+  @@map("outbox_events")
+}
+
+// Records every event this service has processed so re-deliveries are no-ops.
+model InboxEvent {
+  eventId    String   @id
+  type       String
+  receivedAt DateTime @default(now())
+
+  @@map("inbox_events")
 }
