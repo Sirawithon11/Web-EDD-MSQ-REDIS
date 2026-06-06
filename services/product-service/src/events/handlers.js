@@ -27,6 +27,9 @@ async function adjust(tx, items, sign) {
   }
 }
 
+// event ที่ได้รับจาก event อื่น จะถูกนำมาเปรียบเทียบ กับ event type 
+// ที่เตรียมไว้ใน handlers.js ถ้าตรงกันก็จะทำการประมวลผล event นั้นๆ ตาม event type business logic ที่ตรงกัน
+
 module.exports = {
   "order.placed": async (tx, p) => {
     await adjust(tx, p.items, +1);

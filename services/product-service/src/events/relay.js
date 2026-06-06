@@ -9,10 +9,12 @@ const BATCH = Number(process.env.OUTBOX_BATCH || 50);
 const MAX_ATTEMPTS = Number(process.env.OUTBOX_MAX_ATTEMPTS || 10);
 const SECRET = process.env.EVENT_SECRET || "dev-event-secret";
 
+//ตรวจสอบว่า event ที่จะ publish มี keys or types ที่ตรงกับที่เตรียมไว้จะส่งไปให้ subscriber หรือไม่
 function targetsFor(type) {
   return (subscriptions[type] || []).filter(Boolean);
 }
-
+//นำข้อมูลของ event ที่จะส่งไปให้ service อื่นๆ มาแปลงเป็นรูปแบบที่ subscriber ต้องการ 
+// และส่งในรูปแบบ HTTP POST ไปยัง subscriber แต่ละตัวที่ subscribe event type นั้นๆ อยู่
 async function post(base, event) {
   const res = await fetch(`${base}/events`, {
     method: "POST",
@@ -27,12 +29,14 @@ async function post(base, event) {
   if (!res.ok) throw new Error(`${base} -> ${res.status}`);
 }
 
-// Deliver one event to all of its subscribers. If a type has no subscribers,
-// this resolves immediately and the event is simply marked PUBLISHED.
+// นำ event key ที่อยู่ใน outbox table มาเช็คว่า event type นั้นๆ มี subscriber หรือไม่ 
+// ถ้ามีก็จะส่ง event นั้นไปยัง subscriber ทุกตัวที่ subscribe event type นั้นๆ อยู่
 async function deliver(event) {
   await Promise.all(targetsFor(event.type).map((base) => post(base, event)));
 }
 
+
+// func. นี้จะทำการส่ง event ที่อยู่ใน outbox table (event ที่จะส่งไป service อื่น)
 async function tick() {
   const batch = await prisma.outboxEvent.findMany({
     where: { status: "PENDING", attempts: { lt: MAX_ATTEMPTS } },
@@ -61,6 +65,10 @@ async function tick() {
   }
 }
 
+
+
+// function นี้ จะถูกเรียกเมื่อ server เริ่มทำงาน และจะทำงานตลอดที server ทำงาน โดยจะมีการเรียกใช้
+// tick() ทุกๆ POLL_MS มิลลิวินาที  
 let timer = null;
 function startRelay() {
   if (timer) return;

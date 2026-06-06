@@ -9,6 +9,10 @@ const handlers = require("./handlers");
 const SECRET = process.env.EVENT_SECRET || "dev-event-secret";
 const router = Router();
 
+
+// services อื่นจะส่ง HTTP api มาที่ endpoint นี้
+// โดยจะ นำ event ที่ส่งมาเก็บใน inbox table ก่อน และถ้า event นั้นๆ 
+// มี type ที่ตรงกับใน handlers.js ก็จะทำการประมวลผล event นั้นๆ ตาม event type business logic ที่ตรงกัน
 router.post("/", async (req, res) => {
   if ((req.headers["x-event-secret"] || "") !== SECRET) {
     return res.status(401).json({ message: "bad event secret" });
