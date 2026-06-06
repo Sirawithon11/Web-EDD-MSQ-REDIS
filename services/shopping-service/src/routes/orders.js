@@ -1,5 +1,6 @@
 const { Router } = require("express");
 const ctrl = require("../controllers/orderController");
+const analytics = require("../controllers/analyticsController");
 const { requireAdmin } = require("../middleware/auth");
 
 const router = Router();
@@ -10,6 +11,7 @@ router.get("/", ctrl.listOrders);
 // admin-only — must precede "/:id" so they aren't captured as an order id
 router.get("/all", requireAdmin, ctrl.adminListOrders);
 router.get("/audit-logs", requireAdmin, ctrl.listAuditLogs);
+router.get("/analytics/sales", requireAdmin, analytics.salesReport);
 
 router.get("/:id", ctrl.getOrder);
 router.patch("/:id/status", requireAdmin, ctrl.updateStatus);

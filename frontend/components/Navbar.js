@@ -21,6 +21,7 @@ export default function Navbar() {
               {!isAdmin && <Link href="/orders">Orders</Link>}
               {isAdmin && <Link href="/admin/products">Admin</Link>}
               {isAdmin && <Link href="/admin/orders">Orders</Link>}
+              {isAdmin && <Link href="/admin/analytics">Analytics</Link>}
               {isAdmin && <Link href="/admin/logs">Logs</Link>}
               <span className="muted">Hi, {user.name?.split(" ")[0]}</span>
               <button className="btn btn-ghost" onClick={logout}>

@@ -71,6 +71,9 @@ export const api = {
   adminListOrders: (query = "") => request(`/api/orders/all${query}`, { auth: true }),
   updateOrderStatus: (id, status) =>
     request(`/api/orders/${id}/status`, { method: "PATCH", body: { status }, auth: true }),
+
+  // analytics — admin only (the heavy sales roll-up)
+  salesReport: (query = "") => request(`/api/orders/analytics/sales${query}`, { auth: true }),
 };
 
 export { API_URL };
