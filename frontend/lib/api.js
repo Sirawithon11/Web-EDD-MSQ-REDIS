@@ -74,6 +74,8 @@ export const api = {
 
   // analytics — admin only (the heavy sales roll-up)
   salesReport: (query = "") => request(`/api/orders/analytics/sales${query}`, { auth: true }),
+  // analytics — admin only (the heavy product co-purchase / market-basket self-join)
+  productAffinity: (query = "") => request(`/api/orders/analytics/affinity${query}`, { auth: true }),
 };
 
 export { API_URL };

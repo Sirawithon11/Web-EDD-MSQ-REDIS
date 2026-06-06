@@ -165,4 +165,100 @@ async function salesReport(req, res) {
   }
 }
 
-module.exports = { salesReport };
+// GET /orders/analytics/affinity  — admin-only.
+//
+// "Market basket" / product co-purchase analysis. This is intentionally even
+// heavier than salesReport: it self-joins order_items against itself on the
+// shared orderId so every pair of products that ever appeared in the same order
+// produces a row, then rolls those pairs up. The self-join is roughly O(items²)
+// per order, so on the seeded dataset it scans and pairs hundreds of thousands
+// of rows — another deliberately un-optimised latency baseline.
+//
+// Query params:
+//   from   ISO date (inclusive)   default: 90 days ago
+//   to     ISO date (exclusive)   default: now
+//   limit  top-N pairs            default: 20, max 100
+async function productAffinity(req, res) {
+  const now = new Date();
+  const from = req.query.from ? new Date(req.query.from) : new Date(now.getTime() - 90 * 864e5);
+  const to = req.query.to ? new Date(req.query.to) : now;
+  if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) {
+    return res.status(400).json({ message: "Invalid from/to date" });
+  }
+  if (from >= to) {
+    return res.status(400).json({ message: "`from` must be before `to`" });
+  }
+  const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 100);
+
+  const startedAt = Date.now();
+
+  try {
+    // Self-join order_items on the shared order. The `a."productId" < b."productId"`
+    // predicate keeps each unordered pair once and drops self-pairs. This is the
+    // expensive part of the request — the join fans out across every co-purchase.
+    const pairs = await prisma.$queryRaw`
+      SELECT
+        a."productId"               AS product_a,
+        MAX(a."productName")        AS name_a,
+        b."productId"               AS product_b,
+        MAX(b."productName")        AS name_b,
+        COUNT(*)                    AS co_count,
+        COUNT(DISTINCT a."orderId") AS order_count,
+        SUM(a.price * a.quantity + b.price * b.quantity) AS pair_revenue
+      FROM order_items a
+      JOIN order_items b
+        ON b."orderId" = a."orderId"
+       AND a."productId" < b."productId"
+      JOIN orders o ON o.id = a."orderId"
+      WHERE o.status::text = ANY (${REVENUE_STATUSES})
+        AND o."createdAt" >= ${from}
+        AND o."createdAt" <  ${to}
+      GROUP BY a."productId", b."productId"
+      ORDER BY co_count DESC
+      LIMIT ${limit}
+    `;
+
+    // Enrich both sides of each pair with live catalogue data from product-service.
+    let catalogue = {};
+    try {
+      const ids = [
+        ...new Set(pairs.flatMap((r) => [Number(r.product_a), Number(r.product_b)])),
+      ];
+      const products = await getProductsByIds(ids);
+      catalogue = Object.fromEntries(products.map((p) => [p.id, p]));
+    } catch (_) {
+      /* best-effort: fall back to the snapshot name stored on the order item */
+    }
+
+    const side = (id, name) => {
+      const live = catalogue[Number(id)];
+      return {
+        productId: num(id),
+        name: live?.name ?? name,
+        currentStock: live?.stock,
+        currentPrice: live ? Number(live.price) : undefined,
+        active: live?.active,
+      };
+    };
+
+    res.json({
+      range: { from, to },
+      pairs: pairs.map((r) => ({
+        a: side(r.product_a, r.name_a),
+        b: side(r.product_b, r.name_b),
+        coCount: num(r.co_count),
+        orderCount: num(r.order_count),
+        pairRevenue: Number(num(r.pair_revenue).toFixed(2)),
+      })),
+      meta: { generatedInMs: Date.now() - startedAt },
+    });
+  } catch (err) {
+    console.error("productAffinity failed:", err);
+    res.status(500).json({
+      message: "Affinity report failed",
+      detail: err?.meta?.message || err.message,
+    });
+  }
+}
+
+module.exports = { salesReport, productAffinity };

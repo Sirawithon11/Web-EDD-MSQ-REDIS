@@ -12,6 +12,7 @@ router.get("/", ctrl.listOrders);
 router.get("/all", requireAdmin, ctrl.adminListOrders);
 router.get("/audit-logs", requireAdmin, ctrl.listAuditLogs);
 router.get("/analytics/sales", requireAdmin, analytics.salesReport);
+router.get("/analytics/affinity", requireAdmin, analytics.productAffinity);
 
 router.get("/:id", ctrl.getOrder);
 router.patch("/:id/status", requireAdmin, ctrl.updateStatus);
