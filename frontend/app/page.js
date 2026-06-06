@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import { api } from "@/lib/api";
+import TimeWeather from "@/components/TimeWeather";
 
 export default function HomePage() {
   const [products, setProducts] = useState([]);
@@ -69,6 +70,7 @@ export default function HomePage() {
             <span className="cat-count">{c.productCount ?? 0}</span>
           </button>
         ))}
+        <TimeWeather />
       </aside>
 
       <div className="content">

@@ -223,6 +223,33 @@ async function runSuite() {
   const badIdStatus = await api("PATCH", "/api/orders/notanumber/status", { token: adminToken, body: { status: "PAID" } });
   check("PATCH /api/orders/:id/status bad id → 400", badIdStatus.status === 400, badIdStatus);
 
+  // ------------------------------------------------------ external time/weather
+  // The sidebar clock + temperature widget calls Open-Meteo directly from the
+  // browser (not through the gateway). Time it here too so its latency shows up
+  // in the report alongside our own endpoints.
+  section("External — time/weather API (Open-Meteo)");
+  {
+    const url =
+      "https://api.open-meteo.com/v1/forecast?latitude=13.7563&longitude=100.5018&current=temperature_2m";
+    const label = "GET open-meteo /v1/forecast";
+    const start = performance.now();
+    let weather;
+    try {
+      const res = await fetch(url);
+      const json = await res.json().catch(() => null);
+      weather = { status: res.status, json, ms: performance.now() - start };
+    } catch (e) {
+      weather = { status: 0, json: null, error: e.message, ms: performance.now() - start };
+    }
+    if (!timings.has(label)) timings.set(label, []);
+    timings.get(label).push(weather.ms);
+    check(
+      "GET Open-Meteo current temperature",
+      weather.status === 200 && typeof weather.json?.current?.temperature_2m === "number",
+      weather
+    );
+  }
+
   // -------------------------------------------------------------------- cleanup
   section("Cleanup");
   if (prodId) {

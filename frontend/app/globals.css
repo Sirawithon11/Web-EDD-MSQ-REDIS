@@ -180,6 +180,9 @@ label {
   padding: 8px;
   position: sticky;
   top: 76px;
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100vh - 100px);
 }
 .sidebar h3 {
   margin: 8px 10px;
@@ -235,7 +238,28 @@ label {
   .sidebar {
     width: 100%;
     position: static;
+    min-height: 0;
   }
+}
+
+/* Time + weather widget (pinned to bottom of sidebar) */
+.time-weather {
+  margin-top: auto;
+  padding: 12px 10px 4px;
+  border-top: 1px solid var(--border);
+}
+.tw-time {
+  font-size: 20px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.tw-date {
+  margin-top: 2px;
+}
+.tw-temp {
+  margin-top: 8px;
+  font-size: 14px;
+  color: var(--text);
 }
 
 /* Toolbar */
