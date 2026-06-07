@@ -16,7 +16,9 @@ COPY . .
 EXPOSE 4003
 
 # Create/sync tables on startup (idempotent), then launch the service.
+# --accept-data-loss lets db push drop the obsolete outbox/inbox tables left
+# over from the pre-RabbitMQ design (those tables are no longer in the schema).
 # Seeding is NOT run here so data persists across restarts.
 # Seed manually when needed:  docker compose exec shopping-service npm run seed
-CMD ["sh", "-c", "npx prisma db push --skip-generate && npm start"]
+CMD ["sh", "-c", "npx prisma db push --skip-generate --accept-data-loss && npm start"]
 
