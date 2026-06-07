@@ -1,6 +1,6 @@
 // Inbound event handlers for product-service. Each receives the parsed event
 // payload and does its own DB work via prisma (no shared tx / inbox now that
-// delivery goes through RabbitMQ — see ./bus.js).
+// delivery goes through Kafka — see ./bus.js).
 //
 // These maintain a per-product `salesCount` popularity counter from
 // shopping-service's order lifecycle events. NOTE: this is independent of

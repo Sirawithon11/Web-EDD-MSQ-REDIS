@@ -27,12 +27,12 @@ app.use((err, req, res, next) => {
 
 app.listen(PORT, async () => {
   console.log(`product-service listening on :${PORT}`);
-  // Connect to RabbitMQ, then consume shopping-service's order.* events to keep
+  // Connect to Kafka, then consume shopping-service's order.* events to keep
   // each product's salesCount up to date.
   await connectBus();
   startConsumer({
-    queue: "product-service.events",
-    bindings: ["order.placed", "order.status.changed", "order.deleted"],
+    groupId: "product-service",
+    topics: ["order.placed", "order.status.changed", "order.deleted"],
     handlers,
   });
 });

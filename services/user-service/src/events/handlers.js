@@ -1,6 +1,6 @@
 // Inbound event handlers for user-service. Each receives the parsed event
 // payload and does its own DB work via prisma (no shared tx / inbox now that
-// delivery goes through RabbitMQ — see ./bus.js).
+// delivery goes through Kafka — see ./bus.js).
 //
 // These maintain a per-user activity projection (ordersCount / totalSpent /
 // lastOrderAt) from shopping-service's order lifecycle events. Because those

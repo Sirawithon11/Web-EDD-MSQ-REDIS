@@ -1,112 +1,109 @@
-// RabbitMQ event bus (pure broker — no outbox/inbox).
+// Kafka event bus (pure broker — no outbox/inbox).
 //
-// Topology: a single durable TOPIC exchange (domain.events). Producers publish
-// with routingKey = event type (e.g. "product.created"). Each consuming service
-// declares its OWN durable queue and binds it to the event types it cares about,
-// so adding/removing a consumer never touches the producer.
+// Topology: ONE TOPIC PER EVENT TYPE (e.g. "product.created"). Producers send to
+// the topic named after the event type. Each consuming service joins its OWN
+// consumer group and subscribes to the topics it cares about, so its read
+// offsets are tracked independently — the Kafka equivalent of a durable
+// per-service queue — and adding/removing a consumer never touches the producer.
 //
-// Trade-offs of dropping the transactional outbox/inbox:
+// Trade-offs (unchanged from the previous RabbitMQ design):
 //   * publish happens AFTER the DB commit, so a crash in that window loses the
 //     event (at-most-once for that gap) — acceptable for this demo.
-//   * there is no inbox dedupe, so a redelivery (consumer crash before ack) can
-//     re-run a handler. Upserts are safe; counters can double-count.
-const amqp = require("amqplib");
+//   * there is no inbox dedupe, so a redelivery (consumer crash before the offset
+//     commit) can re-run a handler. Upserts are safe; counters can double-count.
+//   * on handler failure we log and move on (the offset still commits) so a
+//     poison message can't loop forever — mirrors the old nack(no-requeue).
+const { Kafka, logLevel } = require("kafkajs");
 const { randomUUID } = require("crypto");
 
-const URL = process.env.RABBITMQ_URL || "amqp://guest:guest@localhost:5672";
-const EXCHANGE = process.env.EVENTS_EXCHANGE || "domain.events";
-const PREFETCH = Number(process.env.EVENTS_PREFETCH || 20);
+const BROKERS = (process.env.KAFKA_BROKERS || "localhost:9092")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+const CLIENT_ID = process.env.KAFKA_CLIENT_ID || "service";
 const RECONNECT_MS = Number(process.env.EVENTS_RECONNECT_MS || 3000);
 
-let channel = null;
-// Registered consumers, replayed on every (re)connect so consumption survives a
-// broker restart.
-const consumers = [];
+const kafka = new Kafka({
+  clientId: CLIENT_ID,
+  brokers: BROKERS,
+  logLevel: logLevel.NOTHING, // keep kafkajs' chatty retry logs out of the app log
+  retry: { initialRetryTime: 300, retries: 10 },
+});
 
-// Bind a queue to its event types and start consuming. Each delivery is parsed,
-// dispatched to its handler, then ack'd on success / nack'd (no requeue) on
-// failure so a poison message can't loop forever.
-async function attach({ queue, bindings, handlers }) {
-  await channel.assertQueue(queue, { durable: true });
-  for (const key of bindings) await channel.bindQueue(queue, EXCHANGE, key);
-  await channel.prefetch(PREFETCH);
+let producer = null; // resolved once connected
+let connecting = null; // in-flight connect promise (so callers can await it)
 
-  await channel.consume(queue, async (msg) => {
-    if (!msg) return; // consumer cancelled by the server
-    const type = msg.properties.type || msg.fields.routingKey;
-    try {
-      const payload = JSON.parse(msg.content.toString());
-      const handler = handlers[type];
-      if (handler) await handler(payload);
-      channel.ack(msg);
-    } catch (err) {
-      console.error(`[bus] handler "${type}" failed:`, err.message);
-      channel.nack(msg, false, false); // drop (no requeue) — avoids poison loop
-    }
-  });
-
-  console.log(`[bus] consuming ${queue} <- [${bindings.join(", ")}]`);
-}
-
-async function setup() {
-  const conn = await amqp.connect(URL);
-  conn.on("error", (err) => console.error("[bus] connection error:", err.message));
-  conn.on("close", () => {
-    channel = null;
-    console.warn(`[bus] connection closed; reconnecting in ${RECONNECT_MS}ms`);
-    setTimeout(connectBus, RECONNECT_MS);
-  });
-
-  channel = await conn.createChannel();
-  await channel.assertExchange(EXCHANGE, "topic", { durable: true });
-
-  for (const cfg of consumers) await attach(cfg); // (re)attach after a reconnect
-  console.log(`[bus] connected to ${URL} (exchange "${EXCHANGE}")`);
-}
-
-// Connect with retry. Resolves once connected; keeps retrying in the background
-// if the broker isn't up yet, so service startup never hard-fails on RabbitMQ.
+// Connect the producer with retry. Never hard-fails: if Kafka isn't up yet it
+// keeps retrying in the background so service startup survives a cold broker.
 function connectBus() {
-  return setup().catch((err) => {
-    console.error(`[bus] connect failed: ${err.message}; retry in ${RECONNECT_MS}ms`);
-    setTimeout(connectBus, RECONNECT_MS);
-  });
+  connecting = (async function connect() {
+    try {
+      const p = kafka.producer({ allowAutoTopicCreation: true });
+      await p.connect();
+      producer = p;
+      console.log(`[bus] producer connected to ${BROKERS.join(",")}`);
+      return p;
+    } catch (err) {
+      console.error(`[bus] connect failed: ${err.message}; retry in ${RECONNECT_MS}ms`);
+      await new Promise((r) => setTimeout(r, RECONNECT_MS));
+      return connect();
+    }
+  })();
+  return connecting;
 }
 
-// Resolve the live channel, briefly waiting if a (re)connect is in flight.
-function getChannel(timeoutMs = 10000) {
-  if (channel) return Promise.resolve(channel);
-  return new Promise((resolve, reject) => {
-    const started = Date.now();
-    const t = setInterval(() => {
-      if (channel) {
-        clearInterval(t);
-        resolve(channel);
-      } else if (Date.now() - started > timeoutMs) {
-        clearInterval(t);
-        reject(new Error("RabbitMQ channel not ready"));
-      }
-    }, 100);
-  });
+// Resolve the live producer, waiting on the in-flight connect if needed.
+function getProducer() {
+  if (producer) return Promise.resolve(producer);
+  return connecting || connectBus();
 }
 
-// Publish a domain event. Call this AFTER the business DB transaction commits.
+// Publish a domain event to the topic named after its type. Call this AFTER the
+// business DB transaction commits. Keyed by the entity id when present so events
+// about the same entity land on the same partition (in-order per entity).
 async function publish(type, payload) {
-  const ch = await getChannel();
-  ch.publish(EXCHANGE, type, Buffer.from(JSON.stringify(payload)), {
-    persistent: true, // survive a broker restart (with the durable queue)
-    contentType: "application/json",
-    type,
-    messageId: randomUUID(),
-    timestamp: Date.now(),
+  const p = await getProducer();
+  const key = payload?.id ?? payload?.productId ?? payload?.userId;
+  await p.send({
+    topic: type,
+    messages: [
+      {
+        key: key != null ? String(key) : undefined,
+        value: JSON.stringify(payload),
+        headers: { type, messageId: randomUUID(), timestamp: String(Date.now()) },
+      },
+    ],
   });
 }
 
-// Register a consumer. Attaches immediately if already connected, otherwise on
-// the next successful connect.
-function startConsumer(cfg) {
-  consumers.push(cfg);
-  if (channel) attach(cfg).catch((err) => console.error("[bus] attach failed:", err.message));
+// Register a consumer: join `groupId`, subscribe to `topics`, and dispatch each
+// message to handlers[type]. Retries attaching in the background until Kafka is
+// up, so startup never hard-fails on the broker.
+function startConsumer({ groupId, topics, handlers }) {
+  (async function attach() {
+    try {
+      const consumer = kafka.consumer({ groupId });
+      await consumer.connect();
+      for (const topic of topics) await consumer.subscribe({ topic, fromBeginning: false });
+      await consumer.run({
+        eachMessage: async ({ topic, message }) => {
+          const type = message.headers?.type?.toString() || topic;
+          try {
+            const payload = JSON.parse(message.value.toString());
+            const handler = handlers[type];
+            if (handler) await handler(payload);
+          } catch (err) {
+            // log and move on — the offset commits, so a poison message can't loop
+            console.error(`[bus] handler "${type}" failed:`, err.message);
+          }
+        },
+      });
+      console.log(`[bus] consuming group "${groupId}" <- [${topics.join(", ")}]`);
+    } catch (err) {
+      console.error(`[bus] consumer "${groupId}" attach failed: ${err.message}; retry in ${RECONNECT_MS}ms`);
+      setTimeout(attach, RECONNECT_MS);
+    }
+  })();
 }
 
 module.exports = { connectBus, publish, startConsumer };

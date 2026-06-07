@@ -1,7 +1,7 @@
 # Architecture
 
 A microservice e-commerce platform demonstrating four patterns: **microservices**
-(DB-per-service), a **message queue / broker** (RabbitMQ), **event-driven design**
+(DB-per-service), a **message queue / broker** (Kafka), **event-driven design**
 (domain events, CQRS read models, event-driven cache invalidation), and a
 **cache-aside** layer (Redis).
 
@@ -36,9 +36,9 @@ A microservice e-commerce platform demonstrating four patterns: **microservices*
           └─────────────┬───────┴───────────┬─────────────┘
                         ▼                    ▼
                  ┌─────────────┐     ┌──────────────┐
-                 │   RabbitMQ  │     │     Redis     │
-                 │ domain.events│    │ cache-aside   │
-                 │   :5672     │     │    :6380      │
+                 │    Kafka    │     │     Redis     │
+                 │ event topics│     │ cache-aside   │
+                 │   :9092     │     │    :6380      │
                  └─────────────┘     └──────────────┘
 ```
 
@@ -46,7 +46,7 @@ Two communication planes run in parallel:
 
 - **Synchronous (request/response)** — browser → gateway → service → DB, plus a
   few direct service-to-service HTTP calls on the checkout critical path.
-- **Asynchronous (events)** — services publish domain events to RabbitMQ; other
+- **Asynchronous (events)** — services publish domain events to Kafka; other
   services consume them to maintain read models, counters, and to invalidate
   caches. Events are *additive*; they never sit on the critical request path.
 
@@ -64,7 +64,8 @@ Two communication planes run in parallel:
 | user_db           | PostgreSQL 16                          | 5433  | user-service's private DB |
 | product_db        | PostgreSQL 16                          | 5434  | product-service's private DB |
 | shopping_db       | PostgreSQL 16                          | 5435  | shopping-service's private DB |
-| RabbitMQ          | rabbitmq:3.13-management               | 5672 / 15672 | Domain-event broker (topic exchange) |
+| Kafka             | confluentinc/cp-kafka:7.8.0 (KRaft, no ZooKeeper) | 9092 | Domain-event broker (one topic per event type) |
+| Kafka UI          | provectuslabs/kafka-ui                 | 8081  | Web console: topics, messages, consumer-group lag |
 | Redis             | redis:7                                | 6380  | Cache-aside store for user & product list reads |
 
 All of it is orchestrated via [docker-compose.yml](docker-compose.yml).
@@ -104,7 +105,7 @@ POST /api/orders (gateway, auth) ──► shopping-service.checkout
   4. prisma.$transaction:
         create Order + OrderItems, clear cart, write AuditLog   (atomic, local)
         └─ on failure AFTER step 3: restock(...) to compensate  (saga rollback)
-  5. publish "order.placed"  (AFTER commit → RabbitMQ)
+  5. publish "order.placed"  (AFTER commit → Kafka)
 ```
 
 This is a **compensation-based saga**: stock is reserved in product-service first;
@@ -116,33 +117,39 @@ The synchronous product HTTP client is [productClient.js](services/shopping-serv
 
 ---
 
-## 5. Asynchronous flow — event-driven design (RabbitMQ)
+## 5. Asynchronous flow — event-driven design (Kafka)
 
 ### 5.1 Broker topology
 
-A single **durable topic exchange** `domain.events`. Producers publish with
-`routingKey = event type` (e.g. `product.created`). Each consuming service declares
-its **own durable queue** and binds it to the event types it cares about, so adding
-or removing a consumer never touches the producer. The shared bus implementation is
-identical per service: [product bus.js](services/product-service/src/events/bus.js)
+**One topic per event type** (e.g. `product.created`). Producers send each event to
+the topic named after the event type. Each consuming service joins its **own
+consumer group** and subscribes to the topics it cares about, so its read offsets
+are tracked independently (the Kafka equivalent of a durable per-service queue) and
+adding or removing a consumer never touches the producer. The shared bus
+implementation is identical per service:
+[product bus.js](services/product-service/src/events/bus.js)
 (and the matching files under shopping/ and user/).
 
+Kafka runs in **KRaft mode** (no ZooKeeper) as a single broker. Topics are
+auto-created on first publish/subscribe with one partition each.
+
 Key properties:
-- **Persistent messages + durable queues** → survive a broker restart.
+- **Durable commit log + per-group offsets** → events persist and a restarted
+  consumer resumes from its last committed offset.
 - **Publish after commit** → events are sent only once the business DB transaction
   has committed.
-- **Ack on success / nack(no-requeue) on failure** → a poison message is dropped
-  rather than looping forever.
-- **Auto-reconnect** with consumer replay → service startup never hard-fails if
-  RabbitMQ is not yet up.
+- **Log-and-continue on handler failure** → the offset still commits, so a poison
+  message is dropped rather than looping forever (mirrors the old nack-no-requeue).
+- **Auto-reconnect** → kafkajs retries internally and the bus retries the initial
+  connect, so service startup never hard-fails if Kafka is not yet up.
 
-### 5.2 Queues & bindings
+### 5.2 Consumer groups & subscribed topics
 
-| Service  | Queue                     | Bound event types |
-|----------|---------------------------|-------------------|
-| product  | `product-service.events`  | `order.placed`, `order.status.changed`, `order.deleted` |
-| shopping | `shopping-service.events` | `product.created`, `product.updated`, `product.stock.changed`, `product.deleted` |
-| user     | `user-service.events`     | `order.placed`, `order.status.changed`, `order.deleted` |
+| Service  | Consumer group     | Subscribed topics |
+|----------|--------------------|-------------------|
+| product  | `product-service`  | `order.placed`, `order.status.changed`, `order.deleted` |
+| shopping | `shopping-service` | `product.created`, `product.updated`, `product.stock.changed`, `product.deleted` |
+| user     | `user-service`     | `order.placed`, `order.status.changed`, `order.deleted` |
 
 ### 5.3 Events & reactions
 
@@ -266,7 +273,7 @@ Schemas: [user](services/user-service/prisma/schema.prisma) ·
 
 ```
 .
-├── docker-compose.yml          # full stack: DBs, RabbitMQ, Redis, services, gateway, frontend
+├── docker-compose.yml          # full stack: DBs, Kafka, Redis, services, gateway, frontend
 ├── gateway/                    # Express API gateway + JWT pre-check
 ├── services/
 │   ├── user-service/           # auth, users, user stats        (user_db)
@@ -287,7 +294,7 @@ service/
 │   ├── cache.js                # (user & product) Redis cache-aside
 │   ├── audit.js                # (product & shopping) audit-log writer
 │   ├── events/
-│   │   ├── bus.js              # RabbitMQ connect/publish/consume
+│   │   ├── bus.js              # Kafka connect/publish/consume
 │   │   └── handlers.js         # inbound event handlers
 │   ├── routes/
 │   ├── controllers/
@@ -305,7 +312,7 @@ service/
 | Microservices, DB-per-service | 3 services, 3 isolated Postgres DBs, no cross-DB FK |
 | API Gateway | `gateway/` — single entry, routing, JWT fast-fail |
 | Saga (compensation) | checkout: reserve stock → compensate with restock on failure |
-| Message queue / broker | RabbitMQ durable topic exchange `domain.events` |
+| Message queue / broker | Kafka (KRaft), one topic per event type |
 | Event-driven design | domain events drive projections, counters, cache busts |
 | CQRS read model | `ProductProjection` in shopping-service for analytics |
 | Cache-aside | Redis on `GET /users` and `GET /products`, event-invalidated |
@@ -320,8 +327,8 @@ service/
 |-----|---------|---------|
 | `DATABASE_URL` | each service | its own Postgres connection |
 | `JWT_SECRET`, `JWT_EXPIRES_IN` | gateway + all services | token signing/verification |
-| `RABBITMQ_URL`, `EVENTS_EXCHANGE` | all services | broker connection + exchange name |
-| `EVENTS_PREFETCH`, `EVENTS_RECONNECT_MS` | all services | consumer tuning |
+| `KAFKA_BROKERS`, `KAFKA_CLIENT_ID` | all services | broker bootstrap list + client id |
+| `EVENTS_RECONNECT_MS` | all services | connect/attach retry delay |
 | `REDIS_URL`, `REDIS_PASSWORD` | user + product | cache store |
 | `CACHE_TTL_SECONDS` | user | user-list cache TTL (60s) |
 | `PRODUCT_CACHE_TTL_SECONDS` | product | product-list cache TTL (30s) |

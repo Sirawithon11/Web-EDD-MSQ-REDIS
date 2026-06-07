@@ -68,7 +68,7 @@ model Order {
 }
 
 // ---------------------------------------------------------------------------
-// Event-driven read model (events delivered over RabbitMQ — see src/events/)
+// Event-driven read model (events delivered over Kafka — see src/events/)
 // ---------------------------------------------------------------------------
 
 // Local copy of product-service catalogue data, kept fresh by consuming

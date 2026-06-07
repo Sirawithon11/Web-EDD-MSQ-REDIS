@@ -1,6 +1,6 @@
 // Inbound event handlers for shopping-service. Each receives the parsed event
 // payload and does its own DB work via prisma (no shared tx / inbox now that
-// delivery goes through RabbitMQ — see ./bus.js).
+// delivery goes through Kafka — see ./bus.js).
 //
 // These maintain ProductProjection — a local read model of product-service's
 // catalogue. Analytics reads from it instead of making a synchronous

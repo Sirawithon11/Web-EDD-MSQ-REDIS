@@ -8,7 +8,6 @@ services:
   # ----------------------------- Databases -------------------------------
   user-db:
     image: postgres:16-alpine
-    container_name: user-db
     restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
@@ -26,7 +25,6 @@ services:
 
   product-db:
     image: postgres:16-alpine
-    container_name: product-db
     restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
@@ -44,7 +42,6 @@ services:
 
   shopping-db:
     image: postgres:16-alpine
-    container_name: shopping-db
     restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
@@ -61,30 +58,62 @@ services:
       retries: 5
 
   # --------------------------- Message broker ----------------------------
-  # RabbitMQ is the event bus. Services publish domain events to a topic
-  # exchange (domain.events) and consume from their own durable queue.
-  # Management UI: http://localhost:15672  (guest / guest)
-  rabbitmq:
-    image: rabbitmq:3.13-management-alpine
-    container_name: rabbitmq
+  # Kafka (KRaft mode — no ZooKeeper) is the event bus. Services produce domain
+  # events to a topic named after the event type (e.g. "product.created") and
+  # each service consumes via its own consumer group.
+  #   - in-cluster clients connect on  kafka:29092  (INTERNAL listener)
+  #   - host tools connect on          localhost:9092 (EXTERNAL listener)
+  kafka:
+    image: confluentinc/cp-kafka:7.8.0
     restart: unless-stopped
-    environment:
-      RABBITMQ_DEFAULT_USER: guest
-      RABBITMQ_DEFAULT_PASS: guest
     ports:
-      - "5672:5672"   # AMQP
-      - "15672:15672" # management UI
+      - "9092:9092" # external (host) access
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: INTERNAL://0.0.0.0:29092,CONTROLLER://0.0.0.0:9093,EXTERNAL://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092,EXTERNAL://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      # KRaft needs a cluster id up front; this one is a fixed base64 UUID so the
+      # broker auto-formats its storage deterministically on first boot.
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+      # single-node: keep all replication factors at 1
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # topics are auto-created on first publish/subscribe (1 partition each)
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_NUM_PARTITIONS: 1
     healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092 >/dev/null 2>&1 || exit 1"]
       interval: 10s
-      timeout: 5s
-      retries: 5
+      timeout: 10s
+      retries: 10
+
+  # Web console for Kafka (the broker image has no built-in UI). Browse
+  # topics, inspect messages, and watch per-service consumer-group lag at
+  # http://localhost:8081 (8080 is taken by the gateway).
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    restart: unless-stopped
+    ports:
+      - "8081:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      DYNAMIC_CONFIG_ENABLED: "true"
+    depends_on:
+      kafka:
+        condition: service_healthy
 
   # ----------------------------- Cache -----------------------------------
   # Redis backs the cache-aside layer on user-service's GET /users.
   redis:
     image: redis:7-alpine
-    container_name: redis
     restart: unless-stopped
     command: ["redis-server", "--port", "6380", "--requirepass", "root"]
     ports:
@@ -98,16 +127,15 @@ services:
   # ----------------------------- Services --------------------------------
   user-service:
     build: ./services/user-service
-    container_name: user-service
     restart: unless-stopped
     environment:
       PORT: 4001
       DATABASE_URL: postgresql://postgres:postgres@user-db:5432/user_db?schema=public
       JWT_SECRET: super-secret-change-me
       JWT_EXPIRES_IN: 1d
-      # event-driven (RabbitMQ topic exchange)
-      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
-      EVENTS_EXCHANGE: domain.events
+      # event-driven (Kafka — one topic per event type)
+      KAFKA_BROKERS: kafka:29092
+      KAFKA_CLIENT_ID: user-service
       # cache-aside on GET /users
       REDIS_URL: redis://redis:6380
       REDIS_PASSWORD: root
@@ -119,20 +147,19 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      rabbitmq:
+      kafka:
         condition: service_healthy
 
   product-service:
     build: ./services/product-service
-    container_name: product-service
     restart: unless-stopped
     environment:
       PORT: 4002
       DATABASE_URL: postgresql://postgres:postgres@product-db:5432/product_db?schema=public
       JWT_SECRET: super-secret-change-me
-      # event-driven: publishes product.* and consumes order.* via RabbitMQ
-      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
-      EVENTS_EXCHANGE: domain.events
+      # event-driven: publishes product.* and consumes order.* via Kafka
+      KAFKA_BROKERS: kafka:29092
+      KAFKA_CLIENT_ID: product-service
       # cache-aside on GET /products
       REDIS_URL: redis://redis:6380
       REDIS_PASSWORD: root
@@ -144,12 +171,11 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      rabbitmq:
+      kafka:
         condition: service_healthy
 
   shopping-service:
     build: ./services/shopping-service
-    container_name: shopping-service
     restart: unless-stopped
     environment:
       PORT: 4003
@@ -157,21 +183,20 @@ services:
       JWT_SECRET: super-secret-change-me
       # synchronous calls to product-service (stock saga, bulk fetch)
       PRODUCT_SERVICE_URL: http://product-service:4002
-      # event-driven: publishes order.* and consumes product.* via RabbitMQ
-      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
-      EVENTS_EXCHANGE: domain.events
+      # event-driven: publishes order.* and consumes product.* via Kafka
+      KAFKA_BROKERS: kafka:29092
+      KAFKA_CLIENT_ID: shopping-service
     ports:
       - "4003:4003"
     depends_on:
       shopping-db:
         condition: service_healthy
-      rabbitmq:
+      kafka:
         condition: service_healthy
 
   # ----------------------------- Gateway ---------------------------------
   gateway:
     build: ./gateway
-    container_name: gateway
     restart: unless-stopped
     environment:
       PORT: 8080
@@ -189,7 +214,6 @@ services:
   # ----------------------------- Frontend --------------------------------
   frontend:
     build: ./frontend
-    container_name: frontend
     restart: unless-stopped
     environment:
       # browser talks to the gateway on the host

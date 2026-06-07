@@ -172,40 +172,41 @@ product-service **before** shopping-service.
 
 ---
 
-## Event-driven design (RabbitMQ)
+## Event-driven design (Kafka)
 
 On top of the synchronous request path, the services communicate **asynchronously
-via domain events** over a **RabbitMQ** broker.
+via domain events** over a **Kafka** broker.
 
 How it works (per service, in `src/events/`):
 
-1. **Topic exchange** — a single durable exchange `domain.events`. Producers
-   publish each event with `routingKey = event type` (e.g. `product.created`).
+1. **One topic per event type** — producers send each event to the topic named
+   after the event type (e.g. `product.created`). Topics are auto-created with one
+   partition each.
 2. **Publish** (`bus.js` → `publish(type, payload)`) — called **after** the
-   business DB transaction commits. Messages are `persistent`, so together with
-   durable queues they survive a broker restart.
-3. **Consume** (`bus.js` → `startConsumer({ queue, bindings, handlers })`) — each
-   service declares its **own durable queue** and binds it to the event types it
-   cares about. Deliveries are dispatched to a handler in `handlers.js`, then
-   **ack**'d on success / **nack**'d (no requeue) on failure.
+   business DB transaction commits. Kafka's commit log persists the event, so a
+   consumer that was offline catches up from its last committed offset.
+3. **Consume** (`bus.js` → `startConsumer({ groupId, topics, handlers })`) — each
+   service joins its **own consumer group** and subscribes to the topics it cares
+   about. Each message is dispatched to a handler in `handlers.js`; on handler
+   failure we log and move on so the offset still commits (no poison-message loop).
 
 This is a **pure broker** setup: there is no transactional outbox and no inbox
 dedupe table. The trade-offs (vs. the previous outbox/inbox version):
 
 - a crash in the gap between DB commit and publish can drop an event;
-- a redelivery (consumer crash before ack) can re-run a handler — upserts are
-  idempotent, but counter increments can double-count.
+- a redelivery (consumer crash before the offset commit) can re-run a handler —
+  upserts are idempotent, but counter increments can double-count.
 
 A production hardening step would re-add an outbox for guaranteed publish and an
-inbox (or a dead-letter queue + retry) for safe redelivery.
+inbox (or a dead-letter topic + retry) for safe redelivery.
 
-### Queues & bindings
+### Consumer groups & subscribed topics
 
-| Service  | Queue                    | Bound event types |
-|----------|--------------------------|-------------------|
-| product  | `product-service.events` | `order.placed`, `order.status.changed`, `order.deleted` |
-| shopping | `shopping-service.events`| `product.created`, `product.updated`, `product.stock.changed`, `product.deleted` |
-| user     | `user-service.events`    | `order.placed`, `order.status.changed`, `order.deleted` |
+| Service  | Consumer group     | Subscribed topics |
+|----------|--------------------|-------------------|
+| product  | `product-service`  | `order.placed`, `order.status.changed`, `order.deleted` |
+| shopping | `shopping-service` | `product.created`, `product.updated`, `product.stock.changed`, `product.deleted` |
+| user     | `user-service`     | `order.placed`, `order.status.changed`, `order.deleted` |
 
 ### Events & reactions
 
@@ -224,11 +225,12 @@ projected) instead of calling product-service synchronously on every request.
 > failure) is **unchanged** — events are additive, for projections and side
 > effects, not for the stock-reservation critical path.
 
-New env vars: `RABBITMQ_URL` and `EVENTS_EXCHANGE` (all services), plus optional
-tuning `EVENTS_PREFETCH` and `EVENTS_RECONNECT_MS`. RabbitMQ runs as the
-`rabbitmq` service in `docker-compose.yml`; its management UI is at
-http://localhost:15672 (guest / guest). Run `docker compose up --build` to pick
-everything up.
+New env vars: `KAFKA_BROKERS` and `KAFKA_CLIENT_ID` (all services), plus optional
+tuning `EVENTS_RECONNECT_MS`. Kafka runs in KRaft mode (no ZooKeeper) as the
+`kafka` service in `docker-compose.yml`, reachable on `kafka:29092` inside the
+compose network and `localhost:9092` from the host. A web console (`kafka-ui`) for
+browsing topics, messages, and per-service consumer-group lag is at
+http://localhost:8081. Run `docker compose up --build` to pick everything up.
 
 ### Redis caching for `GET /api/users` (event-driven invalidation)
 

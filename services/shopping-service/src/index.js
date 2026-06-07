@@ -30,12 +30,12 @@ app.use((err, req, res, next) => {
 
 app.listen(PORT, async () => {
   console.log(`shopping-service listening on :${PORT}`);
-  // Connect to RabbitMQ, then consume product-service's product.* events to keep
+  // Connect to Kafka, then consume product-service's product.* events to keep
   // the local ProductProjection read model in sync.
   await connectBus();
   startConsumer({
-    queue: "shopping-service.events",
-    bindings: ["product.created", "product.updated", "product.stock.changed", "product.deleted"],
+    groupId: "shopping-service",
+    topics: ["product.created", "product.updated", "product.stock.changed", "product.deleted"],
     handlers,
   });
 });
