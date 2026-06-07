@@ -1,14 +1,16 @@
-// Inbound event handlers for user-service. Each receives the transaction client
-// and the event payload, and runs inside the consumer's dedupe transaction.
+// Inbound event handlers for user-service. Each receives the parsed event
+// payload and does its own DB work via prisma (no shared tx / inbox now that
+// delivery goes through RabbitMQ — see ./bus.js).
 //
 // These maintain a per-user activity projection (ordersCount / totalSpent /
 // lastOrderAt) from shopping-service's order lifecycle events. Because those
 // fields appear in the cached GET /users payload, each handler also invalidates
 // the user-list cache — this is the event-driven cache-invalidation hook.
+const prisma = require("../prisma");
 const { invalidateUsersList } = require("../cache");
 
 // A user row may legitimately be missing (e.g. event for a since-deleted user).
-// Swallow P2025 ("record not found") so the event is still marked processed.
+// Swallow P2025 ("record not found") so the message is still ack'd.
 async function safe(promise) {
   try {
     await promise;
@@ -17,21 +19,13 @@ async function safe(promise) {
   }
 }
 
-// Drop the cache after a stat-changing event. NOTE: this fires inside the
-// consumer's transaction (just before commit). A concurrent GET in that tiny
-// window could repopulate slightly-stale data; the TTL bounds it, and for a
-// production-grade fix you'd delete again just after commit ("delete-twice").
-async function bustUsersCache() {
-  await invalidateUsersList();
-}
-
 // Does this order status count toward a user's spend/order totals?
 const COUNTS = (status) => status && status !== "CANCELLED";
 
 module.exports = {
-  "order.placed": async (tx, p) => {
+  "order.placed": async (p) => {
     await safe(
-      tx.user.update({
+      prisma.user.update({
         where: { id: p.userId },
         data: {
           ordersCount: { increment: 1 },
@@ -40,14 +34,14 @@ module.exports = {
         },
       })
     );
-    await bustUsersCache();
+    await invalidateUsersList();
   },
 
   // Reverse the totals when an order transitions INTO cancelled.
-  "order.status.changed": async (tx, p) => {
+  "order.status.changed": async (p) => {
     if (p.to === "CANCELLED" && p.from !== "CANCELLED") {
       await safe(
-        tx.user.update({
+        prisma.user.update({
           where: { id: p.userId },
           data: {
             ordersCount: { decrement: 1 },
@@ -55,15 +49,15 @@ module.exports = {
           },
         })
       );
-      await bustUsersCache();
+      await invalidateUsersList();
     }
   },
 
   // A deleted order that still counted toward totals must be reversed.
-  "order.deleted": async (tx, p) => {
+  "order.deleted": async (p) => {
     if (COUNTS(p.status)) {
       await safe(
-        tx.user.update({
+        prisma.user.update({
           where: { id: p.userId },
           data: {
             ordersCount: { decrement: 1 },
@@ -71,7 +65,7 @@ module.exports = {
           },
         })
       );
-      await bustUsersCache();
+      await invalidateUsersList();
     }
   },
 };

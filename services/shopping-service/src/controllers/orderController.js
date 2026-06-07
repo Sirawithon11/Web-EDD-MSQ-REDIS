@@ -1,7 +1,7 @@
 const prisma = require("../prisma");
 const { getProductsByIds, decrementStock, restock } = require("../productClient");
 const { writeAudit } = require("../audit");
-const { publishEvent } = require("../events/outbox");
+const { publish } = require("../events/bus");
 
 // order.* events carry the line items so consumers (user stats, product
 // salesCount) can attribute quantities without a callback.
@@ -67,12 +67,6 @@ async function checkout(req, res) {
         entityId: created.id,
         details: { total: created.total, itemCount: orderItems.length },
       });
-      await publishEvent(tx, "order.placed", {
-        orderId: created.id,
-        userId,
-        total: Number(created.total),
-        items: eventItems(created.items),
-      });
       return created;
     });
   } catch (err) {
@@ -80,6 +74,14 @@ async function checkout(req, res) {
     await restock(stockItems);
     throw err;
   }
+
+  // Publish AFTER commit (pure broker — no transactional outbox).
+  await publish("order.placed", {
+    orderId: order.id,
+    userId,
+    total: Number(order.total),
+    items: eventItems(order.items),
+  });
 
   res.status(201).json(order);
 }
@@ -131,13 +133,15 @@ async function deleteOrder(req, res) {
         byRole: req.user.role,
       },
     });
-    await publishEvent(tx, "order.deleted", {
-      orderId: id,
-      userId: order.userId,
-      total: Number(order.total),
-      status: order.status,
-      items: eventItems(order.items),
-    });
+  });
+
+  // Publish AFTER commit (pure broker — no transactional outbox).
+  await publish("order.deleted", {
+    orderId: id,
+    userId: order.userId,
+    total: Number(order.total),
+    status: order.status,
+    items: eventItems(order.items),
   });
 
   // Return the purchased quantities to product stock (best-effort).
@@ -173,15 +177,17 @@ async function updateStatus(req, res) {
       entityId: id,
       details: { from: order.status, to: status },
     });
-    await publishEvent(tx, "order.status.changed", {
-      orderId: id,
-      userId: order.userId,
-      total: Number(order.total),
-      from: order.status,
-      to: status,
-      items: eventItems(order.items),
-    });
     return result;
+  });
+
+  // Publish AFTER commit (pure broker — no transactional outbox).
+  await publish("order.status.changed", {
+    orderId: id,
+    userId: order.userId,
+    total: Number(order.total),
+    from: order.status,
+    to: status,
+    items: eventItems(order.items),
   });
 
   // Cancelling an order returns its items to stock (once — only on the

@@ -172,26 +172,40 @@ product-service **before** shopping-service.
 
 ---
 
-## Event-driven design (no message queue)
+## Event-driven design (RabbitMQ)
 
 On top of the synchronous request path, the services communicate **asynchronously
-via domain events** using the **Transactional Outbox + HTTP relay** pattern — no
-Kafka/RabbitMQ/Redis broker involved.
+via domain events** over a **RabbitMQ** broker.
 
 How it works (per service, in `src/events/`):
 
-1. **Outbox** — when a service changes state, it writes a row to its own
-   `outbox_events` table **inside the same DB transaction** as the change
-   (`publishEvent(tx, type, payload)`). The event can never be lost or diverge
-   from the data it describes.
-2. **Relay** (`relay.js`) — a background loop polls `outbox_events` for unsent
-   rows and **HTTP-POSTs** each to its subscribers' `/events` endpoint (routing
-   lives in `subscriptions.js`). Success → marked `PUBLISHED`; failure →
-   retried with attempt counting, then `FAILED`. Delivery is **at-least-once**.
-3. **Inbox** (`consumer.js`) — the `/events` endpoint dedupes via an
-   `inbox_events` table and runs the matching handler **in the same transaction**
-   as the dedupe insert, giving **effectively-once** processing. Requests carry a
-   shared `x-event-secret` header.
+1. **Topic exchange** — a single durable exchange `domain.events`. Producers
+   publish each event with `routingKey = event type` (e.g. `product.created`).
+2. **Publish** (`bus.js` → `publish(type, payload)`) — called **after** the
+   business DB transaction commits. Messages are `persistent`, so together with
+   durable queues they survive a broker restart.
+3. **Consume** (`bus.js` → `startConsumer({ queue, bindings, handlers })`) — each
+   service declares its **own durable queue** and binds it to the event types it
+   cares about. Deliveries are dispatched to a handler in `handlers.js`, then
+   **ack**'d on success / **nack**'d (no requeue) on failure.
+
+This is a **pure broker** setup: there is no transactional outbox and no inbox
+dedupe table. The trade-offs (vs. the previous outbox/inbox version):
+
+- a crash in the gap between DB commit and publish can drop an event;
+- a redelivery (consumer crash before ack) can re-run a handler — upserts are
+  idempotent, but counter increments can double-count.
+
+A production hardening step would re-add an outbox for guaranteed publish and an
+inbox (or a dead-letter queue + retry) for safe redelivery.
+
+### Queues & bindings
+
+| Service  | Queue                    | Bound event types |
+|----------|--------------------------|-------------------|
+| product  | `product-service.events` | `order.placed`, `order.status.changed`, `order.deleted` |
+| shopping | `shopping-service.events`| `product.created`, `product.updated`, `product.stock.changed`, `product.deleted` |
+| user     | `user-service.events`    | `order.placed`, `order.status.changed`, `order.deleted` |
 
 ### Events & reactions
 
@@ -210,11 +224,11 @@ projected) instead of calling product-service synchronously on every request.
 > failure) is **unchanged** — events are additive, for projections and side
 > effects, not for the stock-reservation critical path.
 
-New env vars: `EVENT_SECRET` (shared), `USER_SERVICE_URL` (shopping),
-`SHOPPING_SERVICE_URL` (product), plus optional tuning `OUTBOX_POLL_MS`,
-`OUTBOX_BATCH`, `OUTBOX_MAX_ATTEMPTS`. The new tables/columns are created
-automatically by `prisma db push` on container start (run `docker compose up
---build` to pick them up).
+New env vars: `RABBITMQ_URL` and `EVENTS_EXCHANGE` (all services), plus optional
+tuning `EVENTS_PREFETCH` and `EVENTS_RECONNECT_MS`. RabbitMQ runs as the
+`rabbitmq` service in `docker-compose.yml`; its management UI is at
+http://localhost:15672 (guest / guest). Run `docker compose up --build` to pick
+everything up.
 
 ### Redis caching for `GET /api/users` (event-driven invalidation)
 

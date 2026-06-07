@@ -3,8 +3,8 @@ const express = require("express");
 const cors = require("cors");
 const morgan = require("morgan");
 const userRoutes = require("./routes/users");
-const eventsRouter = require("./events/consumer");
-const { startRelay } = require("./events/relay");
+const { connectBus, startConsumer } = require("./events/bus");
+const handlers = require("./events/handlers");
 
 const app = express();
 const PORT = process.env.PORT || 4001;
@@ -16,8 +16,6 @@ app.use(morgan("dev"));
 app.get("/health", (req, res) => res.json({ status: "ok", service: "user-service" }));
 
 app.use("/users", userRoutes);
-// Inbound domain events from other services (secret-protected, internal).
-app.use("/events", eventsRouter);
 
 // 404
 app.use((req, res) => res.status(404).json({ message: "Not found" }));
@@ -28,7 +26,14 @@ app.use((err, req, res, next) => {
   res.status(500).json({ message: "Internal server error" });
 });
 
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`user-service listening on :${PORT}`);
-  startRelay();
+  // Connect to RabbitMQ, then consume shopping-service's order.* events to keep
+  // each user's ordersCount / totalSpent projection up to date.
+  await connectBus();
+  startConsumer({
+    queue: "user-service.events",
+    bindings: ["order.placed", "order.status.changed", "order.deleted"],
+    handlers,
+  });
 });

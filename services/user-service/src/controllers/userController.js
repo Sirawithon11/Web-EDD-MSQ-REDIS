@@ -1,7 +1,7 @@
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const prisma = require("../prisma");
-const { publishEvent } = require("../events/outbox");
+const { publish } = require("../events/bus");
 const { getJSON, setJSON, invalidateUsersList, USERS_LIST_KEY } = require("../cache");
 
 function sign(user) {
@@ -30,21 +30,20 @@ async function register(req, res) {
   }
 
   const hashed = await bcrypt.hash(password, 10);
-  const user = await prisma.$transaction(async (tx) => {
-    const created = await tx.user.create({
-      data: { email, password: hashed, name, phone, address },
-    });
-    await publishEvent(tx, "user.registered", {
-      userId: created.id,
-      email: created.email,
-      name: created.name,
-    });
-    return created;
+  const user = await prisma.user.create({
+    data: { email, password: hashed, name, phone, address },
   });
 
   // A new user changes the list membership — bust the cache immediately so the
   // admin list reflects the registration (read-your-writes on the local write).
   await invalidateUsersList();
+
+  // Publish AFTER the row is committed (pure broker — no transactional outbox).
+  await publish("user.registered", {
+    userId: user.id,
+    email: user.email,
+    name: user.name,
+  });
 
   return res.status(201).json({ token: sign(user), user: publicUser(user) });
 }

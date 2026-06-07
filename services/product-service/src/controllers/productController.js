@@ -1,6 +1,6 @@
 const prisma = require("../prisma");
 const { writeAudit } = require("../audit");
-const { publishEvent } = require("../events/outbox");
+const { publish } = require("../events/bus");
 const { listKey, getJSON, setJSON, invalidateProductLists } = require("../cache");
 
 // Shape a product row into the payload consumers (shopping projection) expect.
@@ -166,10 +166,10 @@ async function create(req, res) {
       },
     });
     await writeAudit(tx, req, { action: "CREATE", entityId: created.id, details: { after: created } });
-    await publishEvent(tx, "product.created", productPayload(created));
     return created;
   });
   await invalidateProductLists(); // new product => every cached listing is stale
+  await publish("product.created", productPayload(product));
   res.status(201).json(product);
 }
 
@@ -192,10 +192,10 @@ async function update(req, res) {
         },
       });
       await writeAudit(tx, req, { action: "UPDATE", entityId: id, details: { before, after: updated } });
-      await publishEvent(tx, "product.updated", productPayload(updated));
       return updated;
     });
     await invalidateProductLists(); // name/price/stock/active may have changed
+    await publish("product.updated", productPayload(product));
     res.json(product);
   } catch (err) {
     res.status(404).json({ message: "Product not found" });
@@ -209,9 +209,9 @@ async function remove(req, res) {
       const before = await tx.product.findUnique({ where: { id } });
       await tx.product.delete({ where: { id } });
       await writeAudit(tx, req, { action: "DELETE", entityId: id, details: { before } });
-      await publishEvent(tx, "product.deleted", { productId: id });
     });
     await invalidateProductLists(); // product removed => listings are stale
+    await publish("product.deleted", { productId: id });
     res.status(204).end();
   } catch (err) {
     res.status(404).json({ message: "Product not found" });
@@ -264,11 +264,14 @@ async function decrementStock(req, res) {
           where: { id },
           data: { stock: { decrement: qty } },
         });
-        await publishEvent(tx, "product.stock.changed", { productId: u.id, stock: u.stock });
         results.push({ id: u.id, stock: u.stock });
       }
       return results;
     });
+    // Publish AFTER commit (pure broker — no transactional outbox).
+    for (const r of updated) {
+      await publish("product.stock.changed", { productId: r.id, stock: r.stock });
+    }
     res.json({ updated });
   } catch (err) {
     if (err.code === "INSUFFICIENT") {
@@ -288,15 +291,21 @@ async function decrementStock(req, res) {
 // POST /products/restock  { items: [{ productId, quantity }] }
 async function restock(req, res) {
   const items = Array.isArray(req.body.items) ? req.body.items : [];
-  await prisma.$transaction(async (tx) => {
+  const updated = await prisma.$transaction(async (tx) => {
+    const out = [];
     for (const item of items) {
       const u = await tx.product.update({
         where: { id: Number(item.productId) },
         data: { stock: { increment: Number(item.quantity) } },
       });
-      await publishEvent(tx, "product.stock.changed", { productId: u.id, stock: u.stock });
+      out.push({ id: u.id, stock: u.stock });
     }
+    return out;
   });
+  // Publish AFTER commit (pure broker — no transactional outbox).
+  for (const r of updated) {
+    await publish("product.stock.changed", { productId: r.id, stock: r.stock });
+  }
   res.json({ ok: true });
 }
 

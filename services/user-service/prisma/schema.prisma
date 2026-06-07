@@ -33,31 +33,7 @@ model User {
 }
 
 // ---------------------------------------------------------------------------
-// Event-driven infrastructure (Transactional Outbox + HTTP relay, no broker)
+// Event-driven design now runs over RabbitMQ (pure broker) — see src/events/.
+// user-service publishes user.registered and consumes order.* to maintain the
+// per-user projection above. No outbox/inbox tables required.
 // ---------------------------------------------------------------------------
-
-// Domain events written in the SAME transaction as the business change, then
-// delivered to subscribers by the background relay. At-least-once delivery.
-model OutboxEvent {
-  id          Int       @id @default(autoincrement())
-  eventId     String    @unique // idempotency key carried to consumers
-  type        String // e.g. "user.registered"
-  payload     Json
-  status      String    @default("PENDING") // PENDING | PUBLISHED | FAILED
-  attempts    Int       @default(0)
-  lastError   String?
-  createdAt   DateTime  @default(now())
-  publishedAt DateTime?
-
-  @@index([status])
-  @@map("outbox_events")
-}
-
-// Records every event this service has processed so re-deliveries are no-ops.
-model InboxEvent {
-  eventId    String   @id
-  type       String
-  receivedAt DateTime @default(now())
-
-  @@map("inbox_events")
-}

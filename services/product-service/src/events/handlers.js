@@ -1,10 +1,12 @@
-// Inbound event handlers for product-service. Each receives the transaction
-// client and the event payload, and runs inside the consumer's dedupe tx.
+// Inbound event handlers for product-service. Each receives the parsed event
+// payload and does its own DB work via prisma (no shared tx / inbox now that
+// delivery goes through RabbitMQ — see ./bus.js).
 //
 // These maintain a per-product `salesCount` popularity counter from
 // shopping-service's order lifecycle events. NOTE: this is independent of
 // `stock` — stock is still owned by the synchronous checkout saga; salesCount
 // is a denormalised analytics counter driven purely by events.
+const prisma = require("../prisma");
 
 async function safe(promise) {
   try {
@@ -16,10 +18,10 @@ async function safe(promise) {
 
 const COUNTS = (status) => status && status !== "CANCELLED";
 
-async function adjust(tx, items, sign) {
+async function adjust(items, sign) {
   for (const item of items || []) {
     await safe(
-      tx.product.update({
+      prisma.product.update({
         where: { id: item.productId },
         data: { salesCount: { [sign > 0 ? "increment" : "decrement"]: item.quantity } },
       })
@@ -27,21 +29,18 @@ async function adjust(tx, items, sign) {
   }
 }
 
-// event ที่ได้รับจาก event อื่น จะถูกนำมาเปรียบเทียบ กับ event type 
-// ที่เตรียมไว้ใน handlers.js ถ้าตรงกันก็จะทำการประมวลผล event นั้นๆ ตาม event type business logic ที่ตรงกัน
-
 module.exports = {
-  "order.placed": async (tx, p) => {
-    await adjust(tx, p.items, +1);
+  "order.placed": async (p) => {
+    await adjust(p.items, +1);
   },
 
-  "order.status.changed": async (tx, p) => {
+  "order.status.changed": async (p) => {
     if (p.to === "CANCELLED" && p.from !== "CANCELLED") {
-      await adjust(tx, p.items, -1);
+      await adjust(p.items, -1);
     }
   },
 
-  "order.deleted": async (tx, p) => {
-    if (COUNTS(p.status)) await adjust(tx, p.items, -1);
+  "order.deleted": async (p) => {
+    if (COUNTS(p.status)) await adjust(p.items, -1);
   },
 };

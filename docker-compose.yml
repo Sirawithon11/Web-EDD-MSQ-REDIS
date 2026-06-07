@@ -60,6 +60,26 @@ services:
       timeout: 5s
       retries: 5
 
+  # --------------------------- Message broker ----------------------------
+  # RabbitMQ is the event bus. Services publish domain events to a topic
+  # exchange (domain.events) and consume from their own durable queue.
+  # Management UI: http://localhost:15672  (guest / guest)
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    ports:
+      - "5672:5672"   # AMQP
+      - "15672:15672" # management UI
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   # ----------------------------- Cache -----------------------------------
   # Redis backs the cache-aside layer on user-service's GET /users.
   redis:
@@ -85,8 +105,9 @@ services:
       DATABASE_URL: postgresql://postgres:postgres@user-db:5432/user_db?schema=public
       JWT_SECRET: super-secret-change-me
       JWT_EXPIRES_IN: 1d
-      # event-driven (transactional outbox + HTTP relay)
-      EVENT_SECRET: super-secret-events
+      # event-driven (RabbitMQ topic exchange)
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+      EVENTS_EXCHANGE: domain.events
       # cache-aside on GET /users
       REDIS_URL: redis://redis:6380
       REDIS_PASSWORD: root
@@ -98,6 +119,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
 
   product-service:
     build: ./services/product-service
@@ -107,9 +130,9 @@ services:
       PORT: 4002
       DATABASE_URL: postgresql://postgres:postgres@product-db:5432/product_db?schema=public
       JWT_SECRET: super-secret-change-me
-      # event-driven: product.* events are delivered to shopping-service
-      SHOPPING_SERVICE_URL: http://shopping-service:4003
-      EVENT_SECRET: super-secret-events
+      # event-driven: publishes product.* and consumes order.* via RabbitMQ
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+      EVENTS_EXCHANGE: domain.events
       # cache-aside on GET /products
       REDIS_URL: redis://redis:6380
       REDIS_PASSWORD: root
@@ -121,6 +144,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
 
   shopping-service:
     build: ./services/shopping-service
@@ -130,14 +155,17 @@ services:
       PORT: 4003
       DATABASE_URL: postgresql://postgres:postgres@shopping-db:5432/shopping_db?schema=public
       JWT_SECRET: super-secret-change-me
+      # synchronous calls to product-service (stock saga, bulk fetch)
       PRODUCT_SERVICE_URL: http://product-service:4002
-      # event-driven: order.* events are delivered to user- & product-service
-      USER_SERVICE_URL: http://user-service:4001
-      EVENT_SECRET: super-secret-events
+      # event-driven: publishes order.* and consumes product.* via RabbitMQ
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+      EVENTS_EXCHANGE: domain.events
     ports:
       - "4003:4003"
     depends_on:
       shopping-db:
+        condition: service_healthy
+      rabbitmq:
         condition: service_healthy
 
   # ----------------------------- Gateway ---------------------------------
