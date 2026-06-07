@@ -34,6 +34,9 @@ export const api = {
   login: (payload) => request("/api/users/login", { method: "POST", body: payload }),
   me: () => request("/api/users/me", { auth: true }),
 
+  // users — admin only (gateway forwards JWT; user-service enforces ADMIN)
+  listUsers: () => request("/api/users", { auth: true }),
+
   // products
   listProducts: (query = "") => request(`/api/products${query}`),
   getProduct: (id) => request(`/api/products/${id}`),

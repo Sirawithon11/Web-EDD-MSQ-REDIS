@@ -60,6 +60,21 @@ services:
       timeout: 5s
       retries: 5
 
+  # ----------------------------- Cache -----------------------------------
+  # Redis backs the cache-aside layer on user-service's GET /users.
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    restart: unless-stopped
+    command: ["redis-server", "--port", "6380", "--requirepass", "root"]
+    ports:
+      - "6380:6380"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6380", "-a", "root", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   # ----------------------------- Services --------------------------------
   user-service:
     build: ./services/user-service
@@ -72,10 +87,16 @@ services:
       JWT_EXPIRES_IN: 1d
       # event-driven (transactional outbox + HTTP relay)
       EVENT_SECRET: super-secret-events
+      # cache-aside on GET /users
+      REDIS_URL: redis://redis:6380
+      REDIS_PASSWORD: root
+      CACHE_TTL_SECONDS: 60
     ports:
       - "4001:4001"
     depends_on:
       user-db:
+        condition: service_healthy
+      redis:
         condition: service_healthy
 
   product-service:
@@ -89,10 +110,16 @@ services:
       # event-driven: product.* events are delivered to shopping-service
       SHOPPING_SERVICE_URL: http://shopping-service:4003
       EVENT_SECRET: super-secret-events
+      # cache-aside on GET /products
+      REDIS_URL: redis://redis:6380
+      REDIS_PASSWORD: root
+      PRODUCT_CACHE_TTL_SECONDS: 30
     ports:
       - "4002:4002"
     depends_on:
       product-db:
+        condition: service_healthy
+      redis:
         condition: service_healthy
 
   shopping-service:

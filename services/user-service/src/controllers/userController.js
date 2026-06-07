@@ -2,6 +2,7 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const prisma = require("../prisma");
 const { publishEvent } = require("../events/outbox");
+const { getJSON, setJSON, invalidateUsersList, USERS_LIST_KEY } = require("../cache");
 
 function sign(user) {
   return jwt.sign(
@@ -41,6 +42,10 @@ async function register(req, res) {
     return created;
   });
 
+  // A new user changes the list membership — bust the cache immediately so the
+  // admin list reflects the registration (read-your-writes on the local write).
+  await invalidateUsersList();
+
   return res.status(201).json({ token: sign(user), user: publicUser(user) });
 }
 
@@ -64,9 +69,21 @@ async function me(req, res) {
   return res.json(publicUser(user));
 }
 
+// GET /users — admin-only. Cache-aside: serve from Redis if present, otherwise
+// read Postgres and populate the cache. The cache is kept correct not by a TTL
+// alone but by event-driven invalidation (see invalidateUsersList callers).
 async function list(req, res) {
+  const cached = await getJSON(USERS_LIST_KEY);
+  if (cached) {
+    res.setHeader("X-Cache", "HIT");
+    return res.json(cached);
+  }
+
   const users = await prisma.user.findMany({ orderBy: { id: "asc" } });
-  return res.json(users.map(publicUser));
+  const payload = users.map(publicUser);
+  await setJSON(USERS_LIST_KEY, payload);
+  res.setHeader("X-Cache", "MISS");
+  return res.json(payload);
 }
 
 async function getById(req, res) {
@@ -76,4 +93,15 @@ async function getById(req, res) {
   return res.json(publicUser(user));
 }
 
-module.exports = { register, login, me, list, getById };
+// GET /users/by-email?email=...  — admin-only. Looks a user up by email, which
+// is served by the `email @unique` index (a point lookup, not a table scan) —
+// the read counterpart to login/register's existence check.
+async function getByEmail(req, res) {
+  const email = req.query.email;
+  if (!email) return res.status(400).json({ message: "email query param is required" });
+  const user = await prisma.user.findUnique({ where: { email } });
+  if (!user) return res.status(404).json({ message: "User not found" });
+  return res.json(publicUser(user));
+}
+
+module.exports = { register, login, me, list, getById, getByEmail };

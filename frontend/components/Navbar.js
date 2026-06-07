@@ -20,6 +20,7 @@ export default function Navbar() {
             <>
               {!isAdmin && <Link href="/orders">Orders</Link>}
               {isAdmin && <Link href="/admin/products">Admin</Link>}
+              {isAdmin && <Link href="/admin/users">Users</Link>}
               {isAdmin && <Link href="/admin/orders">Orders</Link>}
               {isAdmin && <Link href="/admin/analytics">Analytics</Link>}
               {isAdmin && <Link href="/admin/analytics/affinity">Affinity</Link>}

@@ -2,7 +2,10 @@
 // and the event payload, and runs inside the consumer's dedupe transaction.
 //
 // These maintain a per-user activity projection (ordersCount / totalSpent /
-// lastOrderAt) from shopping-service's order lifecycle events.
+// lastOrderAt) from shopping-service's order lifecycle events. Because those
+// fields appear in the cached GET /users payload, each handler also invalidates
+// the user-list cache — this is the event-driven cache-invalidation hook.
+const { invalidateUsersList } = require("../cache");
 
 // A user row may legitimately be missing (e.g. event for a since-deleted user).
 // Swallow P2025 ("record not found") so the event is still marked processed.
@@ -12,6 +15,14 @@ async function safe(promise) {
   } catch (err) {
     if (err.code !== "P2025") throw err;
   }
+}
+
+// Drop the cache after a stat-changing event. NOTE: this fires inside the
+// consumer's transaction (just before commit). A concurrent GET in that tiny
+// window could repopulate slightly-stale data; the TTL bounds it, and for a
+// production-grade fix you'd delete again just after commit ("delete-twice").
+async function bustUsersCache() {
+  await invalidateUsersList();
 }
 
 // Does this order status count toward a user's spend/order totals?
@@ -29,6 +40,7 @@ module.exports = {
         },
       })
     );
+    await bustUsersCache();
   },
 
   // Reverse the totals when an order transitions INTO cancelled.
@@ -43,6 +55,7 @@ module.exports = {
           },
         })
       );
+      await bustUsersCache();
     }
   },
 
@@ -58,6 +71,7 @@ module.exports = {
           },
         })
       );
+      await bustUsersCache();
     }
   },
 };

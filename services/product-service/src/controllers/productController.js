@@ -1,6 +1,7 @@
 const prisma = require("../prisma");
 const { writeAudit } = require("../audit");
 const { publishEvent } = require("../events/outbox");
+const { listKey, getJSON, setJSON, invalidateProductLists } = require("../cache");
 
 // Shape a product row into the payload consumers (shopping projection) expect.
 // Decimals are coerced to plain numbers so they serialize into the JSON column.
@@ -53,15 +54,28 @@ async function list(req, res) {
       ? { price: "desc" }
       : { createdAt: "desc" };
 
+  // Cache-aside: key off the normalised filter/sort/page params under the
+  // current cache generation. A catalogue write bumps the generation and
+  // orphans every page/filter at once (see invalidateProductLists).
+  const key = await listKey({ search: search || "", category: category || "", minPrice: minPrice || "", maxPrice: maxPrice || "", sort, skip, take });
+  const cached = await getJSON(key);
+  if (cached) {
+    res.setHeader("X-Cache", "HIT");
+    return res.json(cached);
+  }
+
   const [total, products] = await Promise.all([
     prisma.product.count({ where }),
     prisma.product.findMany({ where, orderBy, skip, take, include: { category: true } }),
   ]);
 
-  res.json({
+  const result = {
     data: products,
     pagination: { total, page: Number(page), limit: take, pages: Math.ceil(total / take) },
-  });
+  };
+  await setJSON(key, result);
+  res.setHeader("X-Cache", "MISS");
+  res.json(result);
 }
 
 async function getById(req, res) {
@@ -79,6 +93,16 @@ async function adminList(req, res) {
   const { search, page = "1", limit = "200" } = req.query;
   const take = Math.min(Number(limit) || 200, 200);
   const skip = (Math.max(Number(page) || 1, 1) - 1) * take;
+
+  // Cache-aside, same as the public list. The `admin: true` flag keeps these in
+  // their own keys (admin results include inactive products) while still riding
+  // the shared generation counter, so a catalogue write invalidates them too.
+  const key = await listKey({ admin: true, search: search || "", skip, take });
+  const cached = await getJSON(key);
+  if (cached) {
+    res.setHeader("X-Cache", "HIT");
+    return res.json(cached);
+  }
 
   const where = {};
   if (search) {
@@ -99,10 +123,13 @@ async function adminList(req, res) {
     }),
   ]);
 
-  res.json({
+  const result = {
     data: products,
     pagination: { total, page: Number(page), limit: take, pages: Math.ceil(total / take) },
-  });
+  };
+  await setJSON(key, result);
+  res.setHeader("X-Cache", "MISS");
+  res.json(result);
 }
 
 // Returns categories each annotated with the count of *active* products,
@@ -142,6 +169,7 @@ async function create(req, res) {
     await publishEvent(tx, "product.created", productPayload(created));
     return created;
   });
+  await invalidateProductLists(); // new product => every cached listing is stale
   res.status(201).json(product);
 }
 
@@ -167,6 +195,7 @@ async function update(req, res) {
       await publishEvent(tx, "product.updated", productPayload(updated));
       return updated;
     });
+    await invalidateProductLists(); // name/price/stock/active may have changed
     res.json(product);
   } catch (err) {
     res.status(404).json({ message: "Product not found" });
@@ -182,6 +211,7 @@ async function remove(req, res) {
       await writeAudit(tx, req, { action: "DELETE", entityId: id, details: { before } });
       await publishEvent(tx, "product.deleted", { productId: id });
     });
+    await invalidateProductLists(); // product removed => listings are stale
     res.status(204).end();
   } catch (err) {
     res.status(404).json({ message: "Product not found" });

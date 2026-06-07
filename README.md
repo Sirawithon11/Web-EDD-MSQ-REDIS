@@ -216,6 +216,64 @@ New env vars: `EVENT_SECRET` (shared), `USER_SERVICE_URL` (shopping),
 automatically by `prisma db push` on container start (run `docker compose up
 --build` to pick them up).
 
+### Redis caching for `GET /api/users` (event-driven invalidation)
+
+`user-service` caches the admin user list in **Redis** using the **cache-aside**
+pattern, and keeps it correct via the same event stream:
+
+- **Read** — `GET /users` returns the Redis copy on a hit (`X-Cache: HIT`);
+  on a miss it reads Postgres, stores the result with a TTL, and returns it
+  (`X-Cache: MISS`). See [cache.js](services/user-service/src/cache.js).
+- **Invalidate (the event-driven part)** — the cache is dropped whenever a
+  domain event changes user data:
+  - `register` (a new user) busts it immediately at the local write.
+  - the `order.placed` / `order.status.changed` / `order.deleted` handlers bust
+    it because they mutate `totalSpent` / `ordersCount` (which are in the cached
+    payload). This is cross-service: an order in **shopping** invalidates a cache
+    in **user** purely through events. See
+    [handlers.js](services/user-service/src/events/handlers.js).
+- **TTL** is only a safety net (default 60s, `CACHE_TTL_SECONDS`); correctness
+  comes from invalidation, not expiry.
+- **Graceful degradation** — if Redis is down the endpoint serves straight from
+  Postgres (cache ops become no-ops), so the cache is never a hard dependency.
+
+Flow: `cache hit → return; miss → DB → SET key; relevant event → DEL key`.
+
+Env: `REDIS_URL` (default `redis://localhost:6379`), `CACHE_TTL_SECONDS`. The
+`redis` service is in `docker-compose.yml`; `npm install` (or a rebuild) is
+needed because user-service now depends on `ioredis`.
+
+> Caveat: the seeded list is large (~100k users) so a single cached blob is big,
+> and every order invalidates it (lowering hit-rate). In production you'd
+> paginate and cache per page, and/or exclude the volatile stat fields from the
+> cached list. It's kept simple here to demonstrate the pattern.
+
+### Redis caching for `GET /api/products`
+
+`product-service` caches the (public) product list with the same cache-aside
+approach, but it's **filtered + paginated**, so it uses a slightly more advanced
+key strategy — see [cache.js](services/product-service/src/cache.js):
+
+- **Per-query keys** — the cache key is a hash of the normalised
+  `search / category / minPrice / maxPrice / sort / page / limit`, so every
+  filter+page combination caches independently.
+- **Generation counter for bulk invalidation** — keys embed a version
+  (`products:list:v{N}:...`). A catalogue write does **one** `INCR
+  products:list:ver`, which orphans *every* cached page/filter at once; the old
+  keys then expire by TTL. No `SCAN`/`KEYS` sweep needed.
+- **Invalidated on** `create` / `update` / `remove` (the product owner's own
+  writes — immediate, read-your-writes). Stock-only changes from
+  `decrement-stock` / `restock` are intentionally **not** invalidated — they're
+  high-frequency (every checkout) and would gut the hit-rate; the short TTL keeps
+  listed stock reasonably fresh, and stock is authoritative at checkout anyway.
+- **TTL** default 30s (`PRODUCT_CACHE_TTL_SECONDS`), shorter than the user list
+  because product listings show stock.
+- **Graceful degradation** — same as user-service: Redis down ⇒ serve from
+  Postgres.
+
+Env: `REDIS_URL`, `PRODUCT_CACHE_TTL_SECONDS`. product-service now depends on
+`ioredis` (rebuild / `npm install`).
+
 ---
 
 ## Project structure
