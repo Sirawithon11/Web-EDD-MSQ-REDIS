@@ -111,7 +111,7 @@ async function sendToDlq({ groupId, message, originalTopic, error, attempts }) {
 function startConsumer({ groupId, topics, handlers }) {
   (async function attach() {
     try {
-      const consumer = kafka.consumer({ groupId }); // สร้างตัว consume และมอบชื่อให้ตัว consume
+      const consumer = kafka.consumer({ groupId }); // สร้างตัว consume และมอบชื่อให้ตัว consume โดย consumer group (จำ offset ของ ตัวconsumeล่าสุด แยกตาม consumer group)
       await consumer.connect(); // ตัว consume เชื่อมกับ kafka cluster
       for (const topic of topics) await consumer.subscribe({ topic, fromBeginning: false }); // เรียก event มา consume ตาม type ที่กำหนด จาก partition ใดๆ
       await consumer.run({ // logic นำ event ที่ consume ได้มาแยกเข้า handle ตาม type
