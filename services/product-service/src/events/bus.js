@@ -29,7 +29,7 @@ const kafka = new Kafka({
   clientId: CLIENT_ID, // เป็นชื่อแทน kafka client object ตัวนี้ เมื่อไปตรวจสอบใน kafka จะใช้ชื่อนี้แทน
   brokers: BROKERS, // รายชื่อ node ที่ต้องเชื่อมต่อ กับ service นี้
   logLevel: logLevel.NOTHING, // ปิด log ของ library
-  retry: { initialRetryTime: 300, retries: 10 }, // ถ้าทำอะไรกับ Kafka แล้วเกิดล้มเหลวชั่วคราว ให้ลองใหม่กี่ครั้ง และเว้นช่วงเท่าไหร่
+  retry: { initialRetryTime: 300, retries: 10 }, // Kafka เชื่อมต่อแล้วเกิดล้มเหลว ให้ลองใหม่กี่ครั้ง และเว้นช่วงเท่าไหร่
 });
 
 let producer = null; // resolved once connected
