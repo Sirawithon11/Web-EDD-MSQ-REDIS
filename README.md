@@ -226,9 +226,11 @@ projected) instead of calling product-service synchronously on every request.
 > effects, not for the stock-reservation critical path.
 
 New env vars: `KAFKA_BROKERS` and `KAFKA_CLIENT_ID` (all services), plus optional
-tuning `EVENTS_RECONNECT_MS`. Kafka runs in KRaft mode (no ZooKeeper) as the
-`kafka` service in `docker-compose.yml`, reachable on `kafka:29092` inside the
-compose network and `localhost:9092` from the host. A web console (`kafka-ui`) for
+tuning `EVENTS_RECONNECT_MS`. Kafka runs in KRaft mode (no ZooKeeper) as a **3-node
+cluster** (`kafka-1`/`kafka-2`/`kafka-3`) in `docker-compose.yml`, reachable on
+`kafka-1:29092,kafka-2:29092,kafka-3:29092` inside the compose network and
+`localhost:9092` / `9094` / `9095` from the host. Topics default to **3 partitions
+/ replication factor 3** so the cluster survives losing any one node. A web console (`kafka-ui`) for
 browsing topics, messages, and per-service consumer-group lag is at
 http://localhost:8081. Run `docker compose up --build` to pick everything up.
 

@@ -31,7 +31,7 @@ app.listen(PORT, async () => {
   // each product's salesCount up to date.
   await connectBus();
   startConsumer({
-    groupId: "product-service",
+    groupId: "product-service", // ชื่อ Group ของ service นี้
     topics: ["order.placed", "order.status.changed", "order.deleted"],
     handlers,
   });
