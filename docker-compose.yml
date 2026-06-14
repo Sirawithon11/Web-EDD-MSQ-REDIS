@@ -7,35 +7,35 @@
 # --- Shared Kafka broker config (merged into kafka-1/2/3 via YAML anchors) ---
 # Each broker reuses these; only node id + listeners differ per node.
 x-kafka-common: &kafka-common
-  image: confluentinc/cp-kafka:7.8.0
-  restart: unless-stopped
-  healthcheck:
-    test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092 >/dev/null 2>&1 || exit 1"]
-    interval: 10s
-    timeout: 10s
-    retries: 10
+  image: confluentinc/cp-kafka:7.8.0          # อิมเมจ Kafka (Confluent) เวอร์ชัน 7.8.0 ที่ทุก node ใช้ร่วมกัน
+  restart: unless-stopped                     # ถ้า container ล่ม ให้ Docker สตาร์ทใหม่อัตโนมัติ (ยกเว้นเราสั่งหยุดเอง)
+  healthcheck:                                # วิธีเช็คว่า node "พร้อมใช้งานจริง" ไหม (service อื่นรอจนผ่านก่อนค่อยเริ่ม)
+    test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092 >/dev/null 2>&1 || exit 1"]  # ลองคุยกับ broker ตัวเอง ถ้าตอบได้ = healthy
+    interval: 10s                             # เช็คซ้ำทุก 10 วินาที
+    timeout: 10s                              # แต่ละครั้งรอผลไม่เกิน 10 วินาที ถ้าเกินถือว่าพลาด
+    retries: 10                               # พลาดติดกัน 10 ครั้งถึงจะตัดสินว่า node นี้ unhealthy
 
 x-kafka-env: &kafka-env
-  KAFKA_PROCESS_ROLES: broker,controller
+  KAFKA_PROCESS_ROLES: broker,controller      # node นี้ทำทั้ง 2 บทบาท: broker (เก็บ/ส่ง event) + controller (ดูแล metadata)
   # All 3 nodes vote in the KRaft controller quorum (need a majority = 2 alive).
-  KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-1:9093,2@kafka-2:9093,3@kafka-3:9093
-  KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT
-  KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-  KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+  KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-1:9093,2@kafka-2:9093,3@kafka-3:9093  # รายชื่อ controller ทั้ง 3 ตัวที่โหวตเลือกผู้นำ (ต้องมีชีวิตเกินครึ่ง = 2)
+  KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT  # แต่ละช่องทาง (listener) ใช้ความปลอดภัยแบบไหน — ที่นี่ PLAINTEXT (ไม่เข้ารหัส) ทั้งหมดเพื่อความง่ายตอน dev
+  KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER # ช่องทางชื่อ CONTROLLER ใช้สำหรับการคุยกันของ controller (KRaft) เท่านั้น
+  KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL  # broker คุยกันเอง (เช่น ทำสำเนา replica) ผ่านช่องทางชื่อ INTERNAL
   # KRaft needs a cluster id up front; this fixed base64 UUID lets every broker
   # auto-format its storage deterministically on first boot (same id = one cluster).
-  CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+  CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk          # รหัสประจำคลัสเตอร์ (UUID) — ตั้งค่าเดียวกันทั้ง 3 node = นับเป็นคลัสเตอร์เดียวกัน
   # 3 nodes: replicate the cluster-internal topics 3x and require 2 in sync.
-  KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
-  KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
-  KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
-  KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+  KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3   # topic ภายในที่เก็บ offset ของ consumer (__consumer_offsets) ทำสำเนา 3 ชุด
+  KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3  # topic ภายในที่เก็บสถานะ transaction ทำสำเนา 3 ชุด (ทน node ล่ม)
+  KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2      # เขียน transaction state ต้องมีสำเนาตรงกันอย่างน้อย 2 ชุดถึงจะสำเร็จ
+  KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0   # ไม่หน่วงเวลาก่อนจัด partition ใหม่ให้ consumer group (dev ใช้ได้ทันที, prod มักตั้งหน่วงไว้)
   # Auto-created topics get 3 partitions, each replicated across all 3 nodes,
   # and a write needs 2 in-sync replicas (survives losing 1 node).
-  KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
-  KAFKA_NUM_PARTITIONS: 3
-  KAFKA_DEFAULT_REPLICATION_FACTOR: 3
-  KAFKA_MIN_INSYNC_REPLICAS: 2
+  KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"     # ถ้า publish/subscribe topic ที่ยังไม่มี ให้สร้าง topic นั้นให้อัตโนมัติ
+  KAFKA_NUM_PARTITIONS: 3                      # topic ที่ถูกสร้างอัตโนมัติ จะมี 3 partition (กระจายโหลด/อ่านขนานได้ 3 ทาง)
+  KAFKA_DEFAULT_REPLICATION_FACTOR: 3         # แต่ละ partition ทำสำเนา 3 ชุด กระจายข้าม 3 node (ทน node ล่มได้)
+  KAFKA_MIN_INSYNC_REPLICAS: 2                # เขียน event สำเร็จต้องมีสำเนาตรงกันอย่างน้อย 2 ชุด (ทน node ล่ม 1 ตัวโดยไม่เสียข้อมูล)
 
 services:
   # ----------------------------- Databases -------------------------------
