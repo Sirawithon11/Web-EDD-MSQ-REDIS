@@ -28,7 +28,7 @@
 เพิ่มเติม
 1. โดยทั่วไป 1 project จะมี kafka 1 cluster โดย 1 cluster จะสามารถมีได้หลาย node ขึ้นอยู่กับที่เราออกแบบ ถ้ามีหลาย Node(Broker) การส่ง event message จะทนทานมากขึ้น กรณีมี node พัง
 2. สมัยใหม่ 1 node สามารถเป็นได้ทั้ง Broker และ controller
-3. Consumer Group คือ 1 service สร้างหลายๆสำเนาของ service นี้ ช่วยกันรับ event เดียวกัน จากหลาย partition เพื่อช่วยกันทำงานเดียวกัน เรียกว่า 1 Group (load balance)
+3. Consumer Group คือ 1 service สร้างหลายๆสำเนาของ service นี้ ช่วยกันรับ event เดียวกัน จากหลาย partition เพื่อช่วยกันทำงานเดียวกัน เรียกว่า 1 Group (load balancing) (ให้ docker สร้าง container นี้ เพิ่มก็จะเป็น load balancing แล้ว)
 ---
 
 ## 2. ภาพใหญ่: Cluster และ Node
