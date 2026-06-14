@@ -256,7 +256,46 @@ KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
 
 ---
 
-## 7. สรุป mapping: config → โครงสร้าง
+## 7. Retry + DLQ (กล่องของพังเมื่อ handle ไม่สำเร็จ)
+
+Kafka **ไม่มี** DLQ/retry ในตัว (ต่างจาก RabbitMQ ที่มี DLX) — มันเป็นแค่ log ที่ทนทาน
+เรื่อง retry/DLQ จึงเป็นหน้าที่ของฝั่ง consumer ที่ต้องเขียนเอง โปรเจกต์นี้ทำไว้ใน
+[bus.js](../services/product-service/src/events/bus.js) ฟังก์ชัน `startConsumer`:
+
+```
+event เข้า → parse
+   │
+   ├─ parse พัง (JSON เสีย) = error ถาวร ──────────────► DLQ ทันที (ไม่ retry)
+   │
+   └─ parse ผ่าน → เรียก handler
+         │
+         ├─ สำเร็จ ─────────────────────────────────► commit ไปต่อ ✅
+         │
+         └─ พัง → ลองใหม่แบบ backoff (300 → 600 → 1200ms)
+                  ครบ DLQ_MAX_RETRIES (default 3) แล้วยังพัง
+                                          │
+                                          ▼
+                       ส่งเข้า DLQ topic "<groupId>.dlq" แล้ว commit ไปต่อ
+                       (event ไม่หาย, partition หลักไม่ค้าง, ไว้ replay ทีหลัง)
+```
+
+- **DLQ ตั้งชื่อตาม consumer group** เช่น `product-service.dlq`, `user-service.dlq`
+  เพราะ 1 topic (เช่น `order.placed`) ถูก consume หลาย group — แยก DLQ ตาม group
+  ทำให้รู้ว่า service ไหน handle พัง และไม่ปนกัน
+- message ใน DLQ คงของเดิมครบ (key + value) + แนบ header `x-original-topic`,
+  `x-error`, `x-error-attempts`, `x-failed-at`, `x-consumer-group`
+- ปรับได้ด้วย env: `DLQ_MAX_RETRIES`, `DLQ_RETRY_BACKOFF_MS`, `DLQ_SUFFIX`
+
+> **ข้อจำกัดที่ยังเหลือ:** (1) retry เป็นแบบ in-process จึงหน่วง partition นั้นชั่วคราว
+> ระหว่าง backoff (ถ้าต้องการไม่ block ต้องแยก "retry topic"); (2) ยังไม่มี inbox dedupe
+> handler ที่เป็น counter ([handlers.js](../services/product-service/src/events/handlers.js))
+> จึงอาจนับเกินถ้าถูก retry — ดู `messageId` ใน header ที่เตรียมไว้สำหรับทำ idempotency ภายหลัง
+
+ดู DLQ จริงได้ที่ **Kafka UI** http://localhost:8081 → topic ชื่อ `<service>.dlq`
+
+---
+
+## 8. สรุป mapping: config → โครงสร้าง
 
 | Config | คุมส่วนไหนของโครงสร้าง |
 |--------|------------------------|

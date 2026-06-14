@@ -11,8 +11,14 @@
 //     event (at-most-once for that gap) — acceptable for this demo.
 //   * there is no inbox dedupe, so a redelivery (consumer crash before the offset
 //     commit) can re-run a handler. Upserts are safe; counters can double-count.
-//   * on handler failure we log and move on (the offset still commits) so a
-//     poison message can't loop forever — mirrors the old nack(no-requeue).
+//   * on handler failure we RETRY a few times with backoff (for transient errors
+//     like a DB blip); if it still fails the event is moved to a per-group DLQ
+//     topic "<groupId>.dlq" and the offset commits, so the partition keeps
+//     flowing and a poison message can't loop forever. A bad JSON value is
+//     treated as permanent and goes straight to the DLQ without retrying. The
+//     event is preserved in the DLQ for later inspection/replay. NOTE: handlers
+//     are NOT idempotent yet, so a retry can double-count — inbox dedupe is
+//     intentionally out of scope here.
 const { Kafka, logLevel } = require("kafkajs");
 const { randomUUID } = require("crypto");
 
@@ -22,6 +28,13 @@ const BROKERS = (process.env.KAFKA_BROKERS || "localhost:9092")
   .filter(Boolean);
 const CLIENT_ID = process.env.KAFKA_CLIENT_ID || "service";
 const RECONNECT_MS = Number(process.env.EVENTS_RECONNECT_MS || 3000);
+
+// DLQ / retry settings (sensible defaults — works without any env set)
+const DLQ_MAX_RETRIES = Number(process.env.DLQ_MAX_RETRIES || 3); // handler attempts before giving up
+const DLQ_RETRY_BACKOFF_MS = Number(process.env.DLQ_RETRY_BACKOFF_MS || 300); // base backoff (exponential)
+const DLQ_SUFFIX = process.env.DLQ_SUFFIX || ".dlq"; // DLQ topic = "<groupId><DLQ_SUFFIX>"
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const kafka = new Kafka({
   clientId: CLIENT_ID,
@@ -76,6 +89,24 @@ async function publish(type, payload) {
   });
 }
 
+// Move an event that couldn't be handled to the per-group DLQ topic "<groupId>.dlq".
+// Keeps the original message intact (key + raw value) and attaches headers describing
+// the failure for later inspection/replay. If this send itself fails (e.g. Kafka down)
+// it throws, so eachMessage won't commit and the event is redelivered (at-least-once).
+async function sendToDlq({ groupId, message, originalTopic, error, attempts }) {
+  const p = await getProducer();
+  const headers = { ...(message.headers || {}) }; // keep original headers (type, messageId, timestamp)
+  headers["x-original-topic"] = originalTopic;
+  headers["x-consumer-group"] = groupId;
+  headers["x-error"] = String(error ?? "unknown");
+  headers["x-error-attempts"] = String(attempts);
+  headers["x-failed-at"] = String(Date.now());
+  await p.send({
+    topic: `${groupId}${DLQ_SUFFIX}`,
+    messages: [{ key: message.key, value: message.value, headers }], // the raw original event
+  });
+}
+
 // Register a consumer: join `groupId`, subscribe to `topics`, and dispatch each
 // message to handlers[type]. Retries attaching in the background until Kafka is
 // up, so startup never hard-fails on the broker.
@@ -88,14 +119,40 @@ function startConsumer({ groupId, topics, handlers }) {
       await consumer.run({
         eachMessage: async ({ topic, message }) => {
           const type = message.headers?.type?.toString() || topic;
+
+          // 1) Parse the payload. A bad JSON value is permanent (retrying won't help) -> DLQ now.
+          let payload;
           try {
-            const payload = JSON.parse(message.value.toString());
-            const handler = handlers[type];
-            if (handler) await handler(payload);
+            payload = JSON.parse(message.value.toString());
           } catch (err) {
-            // log and move on — the offset commits, so a poison message can't loop
-            console.error(`[bus] handler "${type}" failed:`, err.message);
+            console.error(`[bus] "${type}" parse failed -> DLQ: ${err.message}`);
+            await sendToDlq({ groupId, message, originalTopic: topic, error: err.message, attempts: 0 });
+            return;
           }
+
+          const handler = handlers[type];
+          if (!handler) return; // no handler for this type -> skip (commit)
+
+          // 2) Run the handler, retrying transient failures with exponential backoff.
+          let lastErr;
+          let made = 0;
+          for (let attempt = 1; attempt <= DLQ_MAX_RETRIES; attempt++) {
+            made = attempt;
+            try {
+              await handler(payload);
+              return; // success -> commit
+            } catch (err) {
+              lastErr = err;
+              if (err.permanent || attempt >= DLQ_MAX_RETRIES) break; // permanent / out of tries
+              const backoff = DLQ_RETRY_BACKOFF_MS * 2 ** (attempt - 1);
+              console.error(`[bus] handler "${type}" failed (attempt ${attempt}/${DLQ_MAX_RETRIES}): ${err.message}; retry in ${backoff}ms`);
+              await sleep(backoff);
+            }
+          }
+
+          // 3) Still failing -> move to the DLQ and carry on (offset commits).
+          console.error(`[bus] handler "${type}" gave up after ${made} attempt(s) -> DLQ: ${lastErr?.message}`);
+          await sendToDlq({ groupId, message, originalTopic: topic, error: lastErr?.message, attempts: made });
         },
       });
       console.log(`[bus] consuming group "${groupId}" <- [${topics.join(", ")}]`);
