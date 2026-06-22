@@ -257,12 +257,18 @@ services:
       USER_SERVICE_URL: http://user-service:4001
       PRODUCT_SERVICE_URL: http://product-service:4002
       SHOPPING_SERVICE_URL: http://shopping-service:4003
+      # Live stock push: gateway consumes product.stock.changed and fans out on /ws
+      KAFKA_BROKERS: kafka-1:29092,kafka-2:29092,kafka-3:29092
+      KAFKA_CLIENT_ID: gateway
     ports:
       - "8080:8080"
     depends_on:
       - user-service
       - product-service
       - shopping-service
+      - kafka-1
+      - kafka-2
+      - kafka-3
 
   # ----------------------------- Frontend --------------------------------
   frontend:

@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import { api } from "@/lib/api";
+import { useStockSocket } from "@/lib/useStockSocket";
 import TimeWeather from "@/components/TimeWeather";
 
 export default function HomePage() {
@@ -41,6 +42,13 @@ export default function HomePage() {
     const t = setTimeout(load, 250); // debounce search
     return () => clearTimeout(t);
   }, [load]);
+
+  // Live stock: patch the matching card in place when the gateway pushes a change.
+  useStockSocket(({ productId, stock }) => {
+    setProducts((prev) =>
+      prev.map((p) => (p.id === productId ? { ...p, stock } : p))
+    );
+  });
 
   const totalCount = categories.reduce((n, c) => n + (c.productCount || 0), 0);
 

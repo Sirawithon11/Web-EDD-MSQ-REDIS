@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { api } from "@/lib/api";
+import { useStockSocket } from "@/lib/useStockSocket";
 import { useAuth } from "@/context/AuthContext";
 
 export default function ProductDetailPage() {
@@ -18,6 +19,13 @@ export default function ProductDetailPage() {
   useEffect(() => {
     api.getProduct(id).then(setProduct).catch((e) => setError(e.message));
   }, [id]);
+
+  // Live stock: update this product's stock when the gateway pushes a change.
+  useStockSocket(({ productId, stock }) => {
+    setProduct((prev) =>
+      prev && prev.id === productId ? { ...prev, stock } : prev
+    );
+  });
 
   async function addToCart() {
     setError("");

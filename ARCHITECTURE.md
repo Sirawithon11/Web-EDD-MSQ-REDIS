@@ -5,10 +5,13 @@ A microservice e-commerce platform demonstrating four patterns: **microservices*
 (domain events, CQRS read models, event-driven cache invalidation), and a
 **cache-aside** layer (Redis).
 
-> **Note on WebSockets:** the repository name mentions WebSocket, but there is no
-> WebSocket implementation in the code yet. It is a planned addition (likely for
-> pushing live order-status / analytics updates to the frontend). This document
-> describes the system as it exists today and flags that gap.
+> **Note on WebSockets:** the gateway exposes a WebSocket endpoint (`/ws`) that
+> pushes **live product-stock updates** to the browser. It joins its own Kafka
+> consumer group (`gateway`) on `product.stock.changed` — the event product-service
+> emits when stock moves on the order path (checkout decrement and restock on
+> cancel/rollback) — and fans each one out to all connected clients, which patch the affected
+> product card in place without re-fetching. See [gateway/src/realtime.js](gateway/src/realtime.js)
+> and the frontend hook [useStockSocket.js](frontend/lib/useStockSocket.js).
 
 ---
 
@@ -317,7 +320,7 @@ service/
 | CQRS read model | `ProductProjection` in shopping-service for analytics |
 | Cache-aside | Redis on `GET /users` and `GET /products`, event-invalidated |
 | Audit logging | append-only `AuditLog` in product & shopping services |
-| WebSocket / live push | **not yet implemented** (planned) |
+| WebSocket / live push | gateway `/ws` fans out `product.stock.changed` (Kafka group `gateway`) → live stock in the browser |
 
 ---
 

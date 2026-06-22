@@ -1,9 +1,11 @@
 require("dotenv").config();
+const http = require("http");
 const express = require("express");
 const cors = require("cors");
 const morgan = require("morgan");
 const { createProxyMiddleware } = require("http-proxy-middleware");
 const jwt = require("jsonwebtoken");
+const { attachRealtime } = require("./realtime");
 
 const app = express();
 const PORT = process.env.PORT || 8080;
@@ -87,9 +89,15 @@ app.use(
 
 app.use((req, res) => res.status(404).json({ message: "Gateway: route not found" }));
 
-app.listen(PORT, () => {
+// Wrap Express in an explicit HTTP server so the WebSocket server can share the
+// same port. attachRealtime adds the /ws endpoint and the Kafka stock consumer.
+const server = http.createServer(app);
+attachRealtime(server);
+
+server.listen(PORT, () => {
   console.log(`gateway listening on :${PORT}`);
   console.log(`  -> users    ${USER_SERVICE_URL}`);
   console.log(`  -> products ${PRODUCT_SERVICE_URL}`);
   console.log(`  -> shopping ${SHOPPING_SERVICE_URL}`);
+  console.log(`  -> ws       /ws (live stock)`);
 });
