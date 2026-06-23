@@ -21,6 +21,7 @@
 //     intentionally out of scope here.
 const { Kafka, logLevel } = require("kafkajs");
 const { randomUUID } = require("crypto");
+const log = require("../logger").child({ component: "bus" });
 
 const BROKERS = (process.env.KAFKA_BROKERS || "localhost:9092")
   .split(",")
@@ -55,10 +56,10 @@ function connectBus() {
       const p = kafka.producer({ allowAutoTopicCreation: true });  //สร้างตัว producer และกำหนด rule การทำงานของตัว producer เท่านั้น ยังไม่ได้เชื่อมต่อ 
       await p.connect();  // นำตัว producer ไปผูกกับ Kafka cluster
       producer = p;
-      console.log(`[bus] producer connected to ${BROKERS.join(",")}`);
+      log.info({ brokers: BROKERS }, "producer connected");
       return p;
     } catch (err) {
-      console.error(`[bus] connect failed: ${err.message}; retry in ${RECONNECT_MS}ms`);
+      log.error({ err: err.message, retryMs: RECONNECT_MS }, "producer connect failed; retrying");
       await new Promise((r) => setTimeout(r, RECONNECT_MS));
       return connect();
     }
@@ -87,6 +88,7 @@ async function publish(type, payload) {
       },
     ],
   });
+  log.info({ event: type, key: key != null ? String(key) : undefined }, "event published");
 }
 
 
@@ -115,15 +117,17 @@ function startConsumer({ groupId, topics, handlers }) {
       await consumer.connect(); // ตัว consume เชื่อมกับ kafka cluster
       for (const topic of topics) await consumer.subscribe({ topic, fromBeginning: false }); // เรียก event มา consume ตาม type ที่กำหนด จาก partition ใดๆ
       await consumer.run({ // logic นำ event ที่ consume ได้มาแยกเข้า handle ตาม type
-        eachMessage: async ({ topic, message }) => {
+        eachMessage: async ({ topic, partition, message }) => {
           const type = message.headers?.type?.toString() || topic;
+          const messageId = message.headers?.messageId?.toString();
+          const meta = { event: type, topic, partition, offset: message.offset, key: message.key?.toString(), messageId };
 
           // 1) แปลง payload — parse พัง = error ถาวร (ลองใหม่ก็พังเหมือนเดิม) → เข้า DLQ ทันที
           let payload;
           try {
             payload = JSON.parse(message.value.toString());
           } catch (err) {
-            console.error(`[bus] "${type}" parse failed -> DLQ: ${err.message}`);
+            log.error({ ...meta, err: err.message }, "event parse failed -> DLQ");
             await sendToDlq({ groupId, message, originalTopic: topic, error: err.message, attempts: 0 });
             return;
           }
@@ -138,24 +142,25 @@ function startConsumer({ groupId, topics, handlers }) {
             made = attempt;
             try {
               await handler(payload);
+              log.info(meta, "event handled");
               return; // สำเร็จ → commit
             } catch (err) {
               lastErr = err;
               if (err.permanent || attempt >= DLQ_MAX_RETRIES) break; // ถาวร/ครบจำนวน → เลิกลอง
               const backoff = DLQ_RETRY_BACKOFF_MS * 2 ** (attempt - 1);
-              console.error(`[bus] handler "${type}" failed (attempt ${attempt}/${DLQ_MAX_RETRIES}): ${err.message}; retry in ${backoff}ms`);
+              log.warn({ ...meta, attempt, maxRetries: DLQ_MAX_RETRIES, backoff, err: err.message }, "handler failed; retrying");
               await sleep(backoff);
             }
           }
 
           // 3) ยังพังอยู่ → เข้า DLQ แล้วไปต่อ (offset commit)
-          console.error(`[bus] handler "${type}" gave up after ${made} attempt(s) -> DLQ: ${lastErr?.message}`);
+          log.error({ ...meta, attempts: made, err: lastErr?.message }, "handler gave up -> DLQ");
           await sendToDlq({ groupId, message, originalTopic: topic, error: lastErr?.message, attempts: made });
         },
       });
-      console.log(`[bus] consuming group "${groupId}" <- [${topics.join(", ")}]`);
+      log.info({ groupId, topics }, "consumer running");
     } catch (err) {
-      console.error(`[bus] consumer "${groupId}" attach failed: ${err.message}; retry in ${RECONNECT_MS}ms`);
+      log.error({ groupId, err: err.message, retryMs: RECONNECT_MS }, "consumer attach failed; retrying");
       setTimeout(attach, RECONNECT_MS);
     }
   })();

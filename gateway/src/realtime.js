@@ -8,6 +8,7 @@
 // local view without re-fetching. Read-only fan-out: clients never send to us.
 const { WebSocketServer } = require("ws");
 const { Kafka, logLevel } = require("kafkajs");
+const log = require("./logger").child({ component: "realtime" });
 
 const BROKERS = (process.env.KAFKA_BROKERS || "localhost:9092")
   .split(",")
@@ -45,9 +46,14 @@ function attachRealtime(server) {
 
   function broadcast(obj) {
     const data = JSON.stringify(obj);
+    let sent = 0;
     for (const ws of wss.clients) {
-      if (ws.readyState === ws.OPEN) ws.send(data);
+      if (ws.readyState === ws.OPEN) {
+        ws.send(data);
+        sent++;
+      }
     }
+    return sent; // number of clients the message actually reached
   }
 
   startStockConsumer(broadcast);
@@ -68,24 +74,29 @@ function startStockConsumer(broadcast) {
       await consumer.connect();
       await consumer.subscribe({ topic: "product.stock.changed", fromBeginning: false });
       await consumer.run({
-        eachMessage: async ({ message }) => {
+        eachMessage: async ({ topic, partition, message }) => {
           let payload;
           try {
             payload = JSON.parse(message.value.toString());
-          } catch {
+          } catch (err) {
+            log.warn({ event: "product.stock.changed", topic, partition, offset: message.offset, err: err.message }, "skipping unparseable event");
             return; // bad message — nothing to push
           }
           if (payload?.productId == null) return;
-          broadcast({
+          const clients = broadcast({
             type: "product.stock.changed",
             productId: payload.productId,
             stock: payload.stock,
           });
+          log.info(
+            { event: "product.stock.changed", productId: payload.productId, stock: payload.stock, clients },
+            "stock change broadcast"
+          );
         },
       });
-      console.log(`[realtime] consuming "product.stock.changed" -> WebSocket /ws`);
+      log.info({ topic: "product.stock.changed" }, "consumer running -> WebSocket /ws");
     } catch (err) {
-      console.error(`[realtime] consumer attach failed: ${err.message}; retry in ${RECONNECT_MS}ms`);
+      log.error({ err: err.message, retryMs: RECONNECT_MS }, "consumer attach failed; retrying");
       setTimeout(attach, RECONNECT_MS);
     }
   })();
