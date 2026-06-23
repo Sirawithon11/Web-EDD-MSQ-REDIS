@@ -111,7 +111,7 @@ npm run dev
 Each `npm run seed` loads an enterprise-scale dataset (all sizes are
 env-overridable — see below):
 
-- **user-service** — ~100k users (1 admin; the rest `userN@shop.dev` / `password123`)
+- **user-service** — ~100k users (1 user; the rest `userN@shop.dev` / `password123`)
 - **product-service** — ~20k products across 8 categories
 - **shopping-service** — ~500k orders (~1.5M line items) + ~5k active carts, referencing seeded user & product IDs
 
