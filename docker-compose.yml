@@ -49,7 +49,7 @@ services:
     ports:
       - "5433:5432"
     volumes:
-      - user-db-data:/var/lib/postgresql/data
+      - user-db-data2:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
@@ -66,7 +66,7 @@ services:
     ports:
       - "5434:5432"
     volumes:
-      - product-db-data:/var/lib/postgresql/data
+      - product-db-data2:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
@@ -83,7 +83,7 @@ services:
     ports:
       - "5435:5432"
     volumes:
-      - shopping-db-data:/var/lib/postgresql/data
+      - shopping-db-data2:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
@@ -283,6 +283,6 @@ services:
       - gateway
 
 volumes:
-  user-db-data:
-  product-db-data:
-  shopping-db-data:
+  user-db-data2:
+  product-db-data2:
+  shopping-db-data2:

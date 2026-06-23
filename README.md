@@ -62,9 +62,9 @@ docker compose up --build
 
 # 2. In another terminal, seed sample data.
 #    Order matters: products must exist before shopping seeds orders.
-docker compose exec user-service     npm run seed
-docker compose exec product-service  npm run seed
-docker compose exec shopping-service npm run seed
+docker compose -p microandkafka exec  user-service     npm run seed
+docker compose -p microandkafka exec  product-service  npm run seed
+docker compose -p microandkafka exec shopping-service npm run seed
 ```
 
 Then open **http://localhost:3000** and log in with `admin@shop.dev` / `admin123`.
