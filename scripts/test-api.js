@@ -112,9 +112,9 @@ async function runSuite() {
   if (p0) {
     const detail = await api("GET", `/api/products/${p0.id}`);
     check("GET /api/products/:id", detail.status === 200 && detail.json?.id === p0.id, detail);
-
-    const bulk = await api("POST", "/api/products/bulk", { body: { ids: [p0.id] } });
-    check("POST /api/products/bulk", bulk.status === 200 && Array.isArray(bulk.json), bulk);
+    // NOTE: bulk / decrement-stock / restock are now INTERNAL gRPC-only methods
+    // (shopping → product), not exposed at the gateway. They are exercised
+    // end-to-end by the checkout flow below.
   } else {
     check("GET /api/products/:id", false, { status: 0 });
   }
@@ -134,15 +134,6 @@ async function runSuite() {
       body: { name: "API Test Widget v2", price: 21.5, stock: 50, categoryId, active: true },
     });
     check("PUT /api/products/:id (update)", upd.status === 200 && upd.json?.name === "API Test Widget v2", upd);
-
-    const dec = await api("POST", "/api/products/decrement-stock", { body: { items: [{ productId: prodId, quantity: 5 }] } });
-    check("POST /api/products/decrement-stock", dec.status === 200, dec);
-
-    const decBad = await api("POST", "/api/products/decrement-stock", { body: { items: [{ productId: prodId, quantity: 999999 }] } });
-    check("POST /api/products/decrement-stock (insufficient → 409)", decBad.status === 409, decBad);
-
-    const restock = await api("POST", "/api/products/restock", { body: { items: [{ productId: prodId, quantity: 5 }] } });
-    check("POST /api/products/restock", restock.status === 200, restock);
   }
 
   const adminList = await api("GET", "/api/products/admin?limit=5", { token: adminToken });

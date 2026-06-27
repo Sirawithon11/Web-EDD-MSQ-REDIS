@@ -170,19 +170,20 @@ services:
     build: ./services/user-service
     restart: unless-stopped
     environment:
-      PORT: 4001
+      # gRPC-only service (no HTTP); the gateway reaches it over gRPC
+      GRPC_PORT: 50051
       DATABASE_URL: postgresql://postgres:postgres@user-db:5432/user_db?schema=public
       JWT_SECRET: super-secret-change-me
       JWT_EXPIRES_IN: 1d
       # event-driven (Kafka — one topic per event type)
       KAFKA_BROKERS: kafka-1:29092,kafka-2:29092,kafka-3:29092
       KAFKA_CLIENT_ID: user-service
-      # cache-aside on GET /users
+      # cache-aside on the users list
       REDIS_URL: redis://redis:6380
       REDIS_PASSWORD: root
       CACHE_TTL_SECONDS: 60
     ports:
-      - "4001:4001"
+      - "50051:50051"
     depends_on:
       user-db:
         condition: service_healthy
@@ -199,18 +200,19 @@ services:
     build: ./services/product-service
     restart: unless-stopped
     environment:
-      PORT: 4002
+      # gRPC-only service (no HTTP); the gateway and shopping-service reach it over gRPC
+      GRPC_PORT: 50052
       DATABASE_URL: postgresql://postgres:postgres@product-db:5432/product_db?schema=public
       JWT_SECRET: super-secret-change-me
       # event-driven: publishes product.* and consumes order.* via Kafka
       KAFKA_BROKERS: kafka-1:29092,kafka-2:29092,kafka-3:29092
       KAFKA_CLIENT_ID: product-service
-      # cache-aside on GET /products
+      # cache-aside on the products list
       REDIS_URL: redis://redis:6380
       REDIS_PASSWORD: root
       PRODUCT_CACHE_TTL_SECONDS: 30
     ports:
-      - "4002:4002"
+      - "50052:50052"
     depends_on:
       product-db:
         condition: service_healthy
@@ -227,16 +229,17 @@ services:
     build: ./services/shopping-service
     restart: unless-stopped
     environment:
-      PORT: 4003
+      # gRPC-only service (no HTTP); the gateway reaches it over gRPC
+      GRPC_PORT: 50053
       DATABASE_URL: postgresql://postgres:postgres@shopping-db:5432/shopping_db?schema=public
       JWT_SECRET: super-secret-change-me
-      # synchronous calls to product-service (stock saga, bulk fetch)
-      PRODUCT_SERVICE_URL: http://product-service:4002
+      # synchronous gRPC calls to product-service (stock saga, bulk fetch)
+      PRODUCT_GRPC_ADDR: product-service:50052
       # event-driven: publishes order.* and consumes product.* via Kafka
       KAFKA_BROKERS: kafka-1:29092,kafka-2:29092,kafka-3:29092
       KAFKA_CLIENT_ID: shopping-service
     ports:
-      - "4003:4003"
+      - "50053:50053"
     depends_on:
       shopping-db:
         condition: service_healthy
@@ -254,9 +257,10 @@ services:
     environment:
       PORT: 8080
       JWT_SECRET: super-secret-change-me
-      USER_SERVICE_URL: http://user-service:4001
-      PRODUCT_SERVICE_URL: http://product-service:4002
-      SHOPPING_SERVICE_URL: http://shopping-service:4003
+      # gateway translates browser REST -> backend gRPC
+      USER_GRPC_ADDR: user-service:50051
+      PRODUCT_GRPC_ADDR: product-service:50052
+      SHOPPING_GRPC_ADDR: shopping-service:50053
       # Live stock push: gateway consumes product.stock.changed and fans out on /ws
       KAFKA_BROKERS: kafka-1:29092,kafka-2:29092,kafka-3:29092
       KAFKA_CLIENT_ID: gateway

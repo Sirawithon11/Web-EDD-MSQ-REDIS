@@ -13,7 +13,7 @@ RUN npx prisma generate
 
 COPY . .
 
-EXPOSE 4001
+EXPOSE 50051
 
 # Create/sync tables on startup (idempotent), then launch the service.
 # --accept-data-loss lets db push drop the obsolete outbox/inbox tables left

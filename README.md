@@ -3,26 +3,29 @@
 A microservice-based e-commerce website.
 
 - **Frontend** — React via **Next.js**
-- **API Gateway** — Express, single entry point that routes to the services and verifies JWTs
-- **3 backend services** — `user`, `product`, `shopping`, each an **Express** app
+- **API Gateway** — Express, single entry point. The browser still talks **REST** to
+  it; internally the gateway **translates every backend call to gRPC** and verifies JWTs
+- **3 backend services** — `user`, `product`, `shopping`, each a **gRPC** service
+  (no HTTP). They expose a `.proto` contract; the gateway and `shopping → product`
+  reach them over gRPC
 - **Database** — **Postgres**, one database *per service* (DB-per-service pattern), accessed via **Prisma**
-- **Auth** — JWT issued by the user service, verified by the gateway & shopping service
+- **Auth** — JWT issued by the user service, forwarded in gRPC metadata and re-verified by each service
 
 ```
                        ┌──────────────┐
-   browser ──────────► │   Frontend   │  Next.js  :3000
+   browser ──REST/WS─► │   Frontend   │  Next.js  :3000
                        └──────┬───────┘
-                              │  NEXT_PUBLIC_API_URL
+                              │  NEXT_PUBLIC_API_URL (REST)
                               ▼
                        ┌──────────────┐
-                       │   Gateway    │  Express  :8080   (verifies JWT)
+                       │   Gateway    │  Express  :8080   (REST → gRPC, verifies JWT)
                        └──┬────┬───┬───┘
-            /api/users    │    │   │   /api/orders, /api/cart
+                  gRPC    │    │   │   gRPC
         ┌─────────────────┘    │   └────────────────────┐
         ▼                      ▼                         ▼
  ┌─────────────┐       ┌──────────────┐         ┌────────────────┐
- │ user-service│       │product-service│        │shopping-service│
- │   :4001     │       │    :4002     │         │     :4003      │
+ │ user-service│       │product-service│◄─gRPC──│shopping-service│
+ │ gRPC :50051 │       │ gRPC :50052  │         │  gRPC :50053   │
  └──────┬──────┘       └──────┬───────┘         └───────┬────────┘
         ▼                     ▼                         ▼
    user_db :5433        product_db :5434          shopping_db :5435
@@ -33,8 +36,9 @@ A microservice-based e-commerce website.
 | Layer        | Tech                                   |
 |--------------|----------------------------------------|
 | Frontend     | Next.js 14 (App Router), React 18      |
-| Gateway      | Express, http-proxy-middleware, JWT    |
-| Services     | Express, Prisma ORM                    |
+| Gateway      | Express (REST) → gRPC client, JWT      |
+| Services     | gRPC (`@grpc/grpc-js`), Prisma ORM     |
+| RPC contract | Protocol Buffers (`.proto`)            |
 | Database     | PostgreSQL 16 (one per service)        |
 | Auth         | JWT (bcrypt-hashed passwords)          |
 | Orchestration| Docker Compose                         |
@@ -44,10 +48,10 @@ A microservice-based e-commerce website.
 | Component         | URL / Port              |
 |-------------------|-------------------------|
 | Frontend          | http://localhost:3000   |
-| Gateway           | http://localhost:8080   |
-| user-service      | http://localhost:4001   |
-| product-service   | http://localhost:4002   |
-| shopping-service  | http://localhost:4003   |
+| Gateway           | http://localhost:8080   (REST) |
+| user-service      | localhost:50051         (gRPC) |
+| product-service   | localhost:50052         (gRPC) |
+| shopping-service  | localhost:50053         (gRPC) |
 | user_db (Postgres)| localhost:5433          |
 | product_db        | localhost:5434          |
 | shopping_db       | localhost:5435          |
@@ -141,7 +145,28 @@ product-service **before** shopping-service.
 
 ---
 
-## API overview (via gateway, prefix `/api`)
+## Service-to-service communication (gRPC)
+
+All inter-service calls are **gRPC**. The browser still uses REST against the
+gateway; the gateway translates each REST request into a gRPC call to the
+relevant service, maps the gRPC status back to an HTTP status (e.g.
+`NOT_FOUND → 404`, `FAILED_PRECONDITION → 409`), and forwards the JWT in gRPC
+metadata so the service can re-verify it.
+
+- **Contracts** live in `proto/*.proto` per component (`UserService`,
+  `ProductService`, `ShoppingService`).
+- **Modelling (hybrid):** the internal `shopping → product` checkout contract
+  (`BulkByIds` / `DecrementStock` / `Restock`) is **fully typed** protobuf; the
+  gateway-facing CRUD/list/admin/analytics methods carry their JSON body in a
+  `json` string field so the REST contract the browser sees is byte-for-byte
+  identical.
+- **Servers**: `services/*/src/grpc/` (`server.js`, `handlers.js`, `auth.js`).
+- **Clients**: gateway `gateway/src/grpcClients.js`; shopping→product
+  `services/shopping-service/src/productClient.js`.
+
+`browser ──REST──► gateway ──gRPC──► service` · `shopping ──gRPC──► product`
+
+## API overview (REST at the gateway, prefix `/api`; gRPC behind it)
 
 ### Users — `user-service`
 | Method | Path                | Auth | Description            |
@@ -218,7 +243,7 @@ inbox (or a dead-letter topic + retry) for safe redelivery.
 | shopping | `order.status.changed` / `order.deleted` | **user** & **product** → reverse the above when an order is cancelled/removed |
 
 The **shopping analytics** endpoints now read product data from the local
-`product_projection` (falling back to an HTTP call only for ids not yet
+`product_projection` (falling back to a **gRPC** call only for ids not yet
 projected) instead of calling product-service synchronously on every request.
 
 > The synchronous checkout saga (reserve stock in product-service, compensate on
@@ -299,7 +324,9 @@ Env: `REDIS_URL`, `PRODUCT_CACHE_TTL_SECONDS`. product-service now depends on
 ```
 .
 ├── docker-compose.yml
-├── gateway/                  # Express API gateway + JWT verification
+├── gateway/                  # Express REST → gRPC translator + JWT verification
+│   ├── proto/                # user/product/shopping .proto (client side)
+│   └── src/grpcClients.js    # gRPC clients + REST↔gRPC forwarding helper
 ├── services/
 │   ├── user-service/         # auth, users        (user_db)
 │   ├── product-service/      # catalog            (product_db)
@@ -311,15 +338,18 @@ Each service folder contains:
 
 ```
 service/
+├── proto/                    # this service's gRPC contract (.proto)
 ├── prisma/
 │   ├── schema.prisma
 │   └── seed.js
 ├── src/
-│   ├── index.js              # express bootstrap
+│   ├── index.js              # gRPC server + Kafka consumer bootstrap
 │   ├── prisma.js             # shared PrismaClient
-│   ├── routes/
-│   ├── controllers/
-│   └── middleware/
+│   └── grpc/
+│       ├── server.js         # bind the gRPC server
+│       ├── handlers.js       # RPC implementations (business logic)
+│       ├── auth.js           # JWT-from-metadata verify + role guard
+│       └── load.js           # proto loader
 ├── .env.example
 ├── Dockerfile
 └── package.json

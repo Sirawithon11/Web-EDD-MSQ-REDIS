@@ -1,0 +1,72 @@
+syntax = "proto3";
+
+package product;
+
+// ProductService is product-service's gRPC API. It is the only way other
+// components reach product-service (the old REST/HTTP server is gone).
+//
+// Modelling style (hybrid):
+//   * The INTERNAL service-to-service contract used by shopping-service on the
+//     checkout path — BulkByIds / DecrementStock / Restock — is fully TYPED
+//     protobuf, because those are the real east-west calls and benefit from a
+//     strict schema.
+//   * The gateway-facing CRUD/list/admin endpoints carry their request and
+//     response bodies as a JSON string (`JsonQuery` / `JsonBody` / `JsonReply`).
+//     This preserves the existing REST JSON contract byte-for-byte (the browser
+//     still gets exactly what it got before) without exploding the proto with
+//     deeply-nested / dynamic shapes (audit `details`, nested category, etc).
+//
+// Auth: the caller's JWT is passed in gRPC metadata `authorization: Bearer <jwt>`
+// (not in the message). Each handler re-verifies it, exactly like the old
+// per-service middleware did.
+service ProductService {
+  // ---- gateway-facing (JSON-bodied; mirror the old REST routes) ----
+  rpc List(JsonQuery) returns (JsonReply);            // GET /products
+  rpc Get(IdRequest) returns (JsonReply);             // GET /products/:id
+  rpc AdminList(JsonQuery) returns (JsonReply);       // GET /products/admin   (admin)
+  rpc ListCategories(Empty) returns (JsonReply);      // GET /products/categories
+  rpc ListAuditLogs(JsonQuery) returns (JsonReply);   // GET /products/audit-logs (admin)
+  rpc Create(JsonBody) returns (JsonReply);           // POST /products        (admin)
+  rpc Update(IdJsonBody) returns (JsonReply);         // PUT /products/:id     (admin)
+  rpc Remove(IdRequest) returns (Empty);              // DELETE /products/:id  (admin)
+
+  // ---- internal, TYPED contract (called by shopping-service) ----
+  rpc BulkByIds(IdList) returns (ProductList);              // POST /products/bulk
+  rpc DecrementStock(StockChangeRequest) returns (StockChangeReply); // reserve stock at checkout
+  rpc Restock(StockChangeRequest) returns (StockChangeReply);        // compensation / cancel
+}
+
+// --- generic envelopes (hybrid JSON passthrough) ---
+message Empty {}
+message IdRequest { int32 id = 1; }
+message JsonQuery { string query = 1; } // JSON-encoded query params
+message JsonBody { string body = 1; }   // JSON-encoded request body
+message IdJsonBody {                     // path id + JSON body (PUT /:id)
+  int32 id = 1;
+  string body = 2;
+}
+message JsonReply { string json = 1; }  // JSON-encoded response body
+
+// --- typed internal contract ---
+message IdList { repeated int32 ids = 1; }
+
+message Product {
+  int32 id = 1;
+  string name = 2;
+  double price = 3;
+  int32 stock = 4;
+  bool active = 5;
+}
+message ProductList { repeated Product products = 1; }
+
+message StockItem {
+  int32 productId = 1;
+  int32 quantity = 2;
+}
+message StockChangeRequest { repeated StockItem items = 1; }
+
+message StockResult {
+  int32 id = 1;
+  int32 stock = 2;
+}
+message StockChangeReply { repeated StockResult updated = 1; }

@@ -1,0 +1,45 @@
+syntax = "proto3";
+
+package shopping;
+
+// ShoppingService is shopping-service's gRPC API (the old REST/HTTP server is
+// gone). Bodies are carried as JSON strings (hybrid modelling) so the REST
+// contract the gateway re-exposes to the browser stays byte-for-byte identical.
+//
+// Auth: JWT is passed in gRPC metadata `authorization: Bearer <jwt>`; every
+// handler re-verifies it (all shopping routes require a logged-in user).
+service ShoppingService {
+  // ---- cart (auth) ----
+  rpc GetCart(Empty) returns (JsonReply);           // GET /cart
+  rpc AddItem(JsonBody) returns (JsonReply);        // POST /cart/items
+  rpc UpdateItem(ItemIdJsonBody) returns (JsonReply); // PUT /cart/items/:itemId
+  rpc RemoveItem(ItemIdRequest) returns (JsonReply);  // DELETE /cart/items/:itemId
+
+  // ---- orders (auth) ----
+  rpc Checkout(Empty) returns (JsonReply);          // POST /orders
+  rpc ListOrders(Empty) returns (JsonReply);        // GET /orders
+  rpc GetOrder(IdRequest) returns (JsonReply);      // GET /orders/:id
+  rpc AdminListOrders(JsonQuery) returns (JsonReply); // GET /orders/all        (admin)
+  rpc ListAuditLogs(JsonQuery) returns (JsonReply);   // GET /orders/audit-logs (admin)
+  rpc UpdateStatus(IdJsonBody) returns (JsonReply);   // PATCH /orders/:id/status (admin)
+  rpc DeleteOrder(IdRequest) returns (Empty);         // DELETE /orders/:id
+
+  // ---- analytics (admin) ----
+  rpc SalesReport(JsonQuery) returns (JsonReply);     // GET /orders/analytics/sales
+  rpc ProductAffinity(JsonQuery) returns (JsonReply); // GET /orders/analytics/affinity
+}
+
+message Empty {}
+message IdRequest { int32 id = 1; }
+message ItemIdRequest { int32 itemId = 1; }
+message JsonQuery { string query = 1; } // JSON-encoded query params
+message JsonBody { string body = 1; }   // JSON-encoded request body
+message IdJsonBody {                     // path id + JSON body
+  int32 id = 1;
+  string body = 2;
+}
+message ItemIdJsonBody {                 // path itemId + JSON body
+  int32 itemId = 1;
+  string body = 2;
+}
+message JsonReply { string json = 1; }  // JSON-encoded response body

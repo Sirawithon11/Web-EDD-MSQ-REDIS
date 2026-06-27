@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package user;
+
+// UserService is user-service's gRPC API (the old REST/HTTP server is gone).
+// Bodies are carried as JSON strings (hybrid modelling) so the REST contract the
+// gateway re-exposes to the browser stays byte-for-byte identical.
+//
+// Auth: JWT is passed in gRPC metadata `authorization: Bearer <jwt>`; each
+// handler re-verifies it (defense in depth), exactly like the old middleware.
+service UserService {
+  rpc Register(JsonBody) returns (JsonReply);   // POST /users/register (public)
+  rpc Login(JsonBody) returns (JsonReply);      // POST /users/login    (public)
+  rpc Me(Empty) returns (JsonReply);            // GET /users/me        (auth)
+  rpc List(Empty) returns (JsonReply);          // GET /users           (admin; X-Cache)
+  rpc GetById(IdRequest) returns (JsonReply);   // GET /users/:id       (admin)
+  rpc GetByEmail(EmailRequest) returns (JsonReply); // GET /users/by-email (admin)
+}
+
+message Empty {}
+message IdRequest { int32 id = 1; }
+message EmailRequest { string email = 1; }
+message JsonBody { string body = 1; }   // JSON-encoded request body
+message JsonReply { string json = 1; }  // JSON-encoded response body

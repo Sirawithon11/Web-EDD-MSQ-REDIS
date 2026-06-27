@@ -3,28 +3,20 @@ const http = require("http");
 const express = require("express");
 const cors = require("cors");
 const morgan = require("morgan");
-const { createProxyMiddleware } = require("http-proxy-middleware");
 const jwt = require("jsonwebtoken");
 const { attachRealtime } = require("./realtime");
+const { userClient, productClient, shoppingClient, forward } = require("./grpcClients");
 
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-const USER_SERVICE_URL = process.env.USER_SERVICE_URL || "http://localhost:4001";
-const PRODUCT_SERVICE_URL = process.env.PRODUCT_SERVICE_URL || "http://localhost:4002";
-const SHOPPING_SERVICE_URL = process.env.SHOPPING_SERVICE_URL || "http://localhost:4003";
-
 app.use(cors());
 app.use(morgan("dev"));
-// NOTE: no body parser here — bodies stream straight through to the services.
+// We now translate REST -> gRPC, so we DO parse the body here (the old proxy
+// streamed it through). 8mb fits base64 data-URL product images.
+app.use(express.json({ limit: "8mb" }));
 
-// http-proxy-middleware v3 rewrites against req.url, which Express has already
-// stripped of the `app.use()` mount path. So inside each proxy the path is e.g.
-// "/categories", not "/api/products/categories". We prepend the service prefix
-// instead of trying to rewrite a "/api/..." prefix that is no longer present.
-const prefixWith = (base) => (path) => `${base}${path}`;
-
-// Fail fast on protected routes (services still re-verify the token themselves).
+// Fast-fail JWT check on protected routes (services still re-verify themselves).
 function requireAuth(req, res, next) {
   const header = req.headers.authorization || "";
   const token = header.startsWith("Bearer ") ? header.slice(7) : null;
@@ -37,55 +29,55 @@ function requireAuth(req, res, next) {
   }
 }
 
+const body = (req) => JSON.stringify(req.body || {});
+const query = (req) => JSON.stringify(req.query || {});
+
 app.get("/health", (req, res) =>
   res.json({
     status: "ok",
     service: "gateway",
+    transport: "grpc",
     routes: ["/api/users", "/api/products", "/api/cart", "/api/orders"],
   })
 );
 
-// /api/users/*  ->  user-service /users/*
-app.use(
-  "/api/users",
-  createProxyMiddleware({
-    target: USER_SERVICE_URL,
-    changeOrigin: true,
-    pathRewrite: prefixWith("/users"),
-  })
-);
+// ------------------------------- users ----------------------------------
+app.post("/api/users/register", (req, res) => forward(req, res, userClient, "Register", { body: body(req) }, { status: 201 }));
+app.post("/api/users/login", (req, res) => forward(req, res, userClient, "Login", { body: body(req) }));
+app.get("/api/users/me", (req, res) => forward(req, res, userClient, "Me", {}));
+app.get("/api/users", (req, res) => forward(req, res, userClient, "List", {}));
+// must precede "/:id" so "by-email" isn't captured as an :id
+app.get("/api/users/by-email", (req, res) => forward(req, res, userClient, "GetByEmail", { email: req.query.email || "" }));
+app.get("/api/users/:id", (req, res) => forward(req, res, userClient, "GetById", { id: Number(req.params.id) }));
 
-// /api/products/*  ->  product-service /products/*
-app.use(
-  "/api/products",
-  createProxyMiddleware({
-    target: PRODUCT_SERVICE_URL,
-    changeOrigin: true,
-    pathRewrite: prefixWith("/products"),
-  })
-);
+// ------------------------------ products --------------------------------
+app.get("/api/products/categories", (req, res) => forward(req, res, productClient, "ListCategories", {}));
+// admin / audit must precede "/:id"
+app.get("/api/products/admin", (req, res) => forward(req, res, productClient, "AdminList", { query: query(req) }));
+app.get("/api/products/audit-logs", (req, res) => forward(req, res, productClient, "ListAuditLogs", { query: query(req) }));
+app.get("/api/products", (req, res) => forward(req, res, productClient, "List", { query: query(req) }));
+app.get("/api/products/:id", (req, res) => forward(req, res, productClient, "Get", { id: Number(req.params.id) }));
+app.post("/api/products", (req, res) => forward(req, res, productClient, "Create", { body: body(req) }, { status: 201 }));
+app.put("/api/products/:id", (req, res) => forward(req, res, productClient, "Update", { id: Number(req.params.id), body: body(req) }));
+app.delete("/api/products/:id", (req, res) => forward(req, res, productClient, "Remove", { id: Number(req.params.id) }));
 
-// /api/cart/*  ->  shopping-service /cart/*   (auth required)
-app.use(
-  "/api/cart",
-  requireAuth,
-  createProxyMiddleware({
-    target: SHOPPING_SERVICE_URL,
-    changeOrigin: true,
-    pathRewrite: prefixWith("/cart"),
-  })
-);
+// -------------------------------- cart ----------------------------------
+app.get("/api/cart", requireAuth, (req, res) => forward(req, res, shoppingClient, "GetCart", {}));
+app.post("/api/cart/items", requireAuth, (req, res) => forward(req, res, shoppingClient, "AddItem", { body: body(req) }, { status: 201 }));
+app.put("/api/cart/items/:itemId", requireAuth, (req, res) => forward(req, res, shoppingClient, "UpdateItem", { itemId: Number(req.params.itemId), body: body(req) }));
+app.delete("/api/cart/items/:itemId", requireAuth, (req, res) => forward(req, res, shoppingClient, "RemoveItem", { itemId: Number(req.params.itemId) }));
 
-// /api/orders/*  ->  shopping-service /orders/*  (auth required)
-app.use(
-  "/api/orders",
-  requireAuth,
-  createProxyMiddleware({
-    target: SHOPPING_SERVICE_URL,
-    changeOrigin: true,
-    pathRewrite: prefixWith("/orders"),
-  })
-);
+// ------------------------------- orders ---------------------------------
+app.post("/api/orders", requireAuth, (req, res) => forward(req, res, shoppingClient, "Checkout", {}, { status: 201 }));
+app.get("/api/orders", requireAuth, (req, res) => forward(req, res, shoppingClient, "ListOrders", {}));
+// admin / analytics must precede "/:id"
+app.get("/api/orders/all", requireAuth, (req, res) => forward(req, res, shoppingClient, "AdminListOrders", { query: query(req) }));
+app.get("/api/orders/audit-logs", requireAuth, (req, res) => forward(req, res, shoppingClient, "ListAuditLogs", { query: query(req) }));
+app.get("/api/orders/analytics/sales", requireAuth, (req, res) => forward(req, res, shoppingClient, "SalesReport", { query: query(req) }));
+app.get("/api/orders/analytics/affinity", requireAuth, (req, res) => forward(req, res, shoppingClient, "ProductAffinity", { query: query(req) }));
+app.get("/api/orders/:id", requireAuth, (req, res) => forward(req, res, shoppingClient, "GetOrder", { id: Number(req.params.id) }));
+app.patch("/api/orders/:id/status", requireAuth, (req, res) => forward(req, res, shoppingClient, "UpdateStatus", { id: Number(req.params.id), body: body(req) }));
+app.delete("/api/orders/:id", requireAuth, (req, res) => forward(req, res, shoppingClient, "DeleteOrder", { id: Number(req.params.id) }));
 
 app.use((req, res) => res.status(404).json({ message: "Gateway: route not found" }));
 
@@ -95,9 +87,9 @@ const server = http.createServer(app);
 attachRealtime(server);
 
 server.listen(PORT, () => {
-  console.log(`gateway listening on :${PORT}`);
-  console.log(`  -> users    ${USER_SERVICE_URL}`);
-  console.log(`  -> products ${PRODUCT_SERVICE_URL}`);
-  console.log(`  -> shopping ${SHOPPING_SERVICE_URL}`);
+  console.log(`gateway listening on :${PORT}  (REST -> gRPC)`);
+  console.log(`  -> users    ${process.env.USER_GRPC_ADDR || "localhost:50051"}`);
+  console.log(`  -> products ${process.env.PRODUCT_GRPC_ADDR || "localhost:50052"}`);
+  console.log(`  -> shopping ${process.env.SHOPPING_GRPC_ADDR || "localhost:50053"}`);
   console.log(`  -> ws       /ws (live stock)`);
 });

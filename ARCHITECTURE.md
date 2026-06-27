@@ -19,19 +19,19 @@ A microservice e-commerce platform demonstrating four patterns: **microservices*
 
 ```
                          ┌──────────────┐
-   browser ────────────► │   Frontend   │  Next.js 14  :3000
+   browser ──REST/WS───► │   Frontend   │  Next.js 14  :3000
                          └──────┬───────┘
-                                │  NEXT_PUBLIC_API_URL
+                                │  NEXT_PUBLIC_API_URL (REST)
                                 ▼
                          ┌──────────────┐
-                         │   Gateway    │  Express  :8080   (verifies JWT)
+                         │   Gateway    │  Express :8080  (REST → gRPC, verifies JWT)
                          └──┬────┬───┬───┘
-              /api/users    │    │   │   /api/orders, /api/cart
+                   gRPC     │    │   │    gRPC
           ┌─────────────────┘    │   └────────────────────┐
           ▼                      ▼                         ▼
    ┌─────────────┐       ┌───────────────┐        ┌────────────────┐
-   │ user-service│       │product-service│        │shopping-service│
-   │   :4001     │       │    :4002      │        │     :4003      │
+   │ user-service│       │product-service│◄──gRPC─│shopping-service│
+   │ gRPC :50051 │       │  gRPC :50052  │        │  gRPC :50053   │
    └──────┬──────┘       └──────┬────────┘        └───────┬────────┘
           ▼                     ▼                         ▼
      user_db :5433        product_db :5434          shopping_db :5435
@@ -47,8 +47,10 @@ A microservice e-commerce platform demonstrating four patterns: **microservices*
 
 Two communication planes run in parallel:
 
-- **Synchronous (request/response)** — browser → gateway → service → DB, plus a
-  few direct service-to-service HTTP calls on the checkout critical path.
+- **Synchronous (request/response)** — the browser talks **REST** to the gateway;
+  the gateway translates each request into a **gRPC** call to a service, and the
+  one service-to-service call on the checkout critical path (shopping → product)
+  is **gRPC** too. The only HTTP in the backend is the gateway's public REST/WS edge.
 - **Asynchronous (events)** — services publish domain events to Kafka; other
   services consume them to maintain read models, counters, and to invalidate
   caches. Events are *additive*; they never sit on the critical request path.
@@ -59,11 +61,11 @@ Two communication planes run in parallel:
 
 | Component         | Tech                                   | Port  | Responsibility |
 |-------------------|----------------------------------------|-------|----------------|
-| Frontend          | Next.js 14 (App Router), React 18      | 3000  | UI; talks only to the gateway |
-| Gateway           | Express, http-proxy-middleware, JWT    | 8080  | Single entry point, routing, JWT pre-check |
-| user-service      | Express, Prisma                        | 4001  | Auth (JWT, bcrypt), user profiles, per-user order stats |
-| product-service   | Express, Prisma                        | 4002  | Catalogue, stock, categories, sales counters |
-| shopping-service  | Express, Prisma                        | 4003  | Cart, orders, checkout saga, analytics |
+| Frontend          | Next.js 14 (App Router), React 18      | 3000  | UI; talks REST to the gateway only |
+| Gateway           | Express (REST) → gRPC clients, JWT     | 8080  | Single entry point, REST→gRPC translation, JWT pre-check |
+| user-service      | gRPC (@grpc/grpc-js), Prisma           | 50051 | Auth (JWT, bcrypt), user profiles, per-user order stats |
+| product-service   | gRPC (@grpc/grpc-js), Prisma           | 50052 | Catalogue, stock, categories, sales counters |
+| shopping-service  | gRPC (@grpc/grpc-js), Prisma           | 50053 | Cart, orders, checkout saga, analytics |
 | user_db           | PostgreSQL 16                          | 5433  | user-service's private DB |
 | product_db        | PostgreSQL 16                          | 5434  | product-service's private DB |
 | shopping_db       | PostgreSQL 16                          | 5435  | shopping-service's private DB |
@@ -100,11 +102,11 @@ stock reservation must be strongly consistent. See
 [orderController.js](services/shopping-service/src/controllers/orderController.js).
 
 ```
-POST /api/orders (gateway, auth) ──► shopping-service.checkout
+POST /api/orders (gateway REST → gRPC, auth) ──► shopping-service.Checkout
   1. load cart + items
-  2. getProductsByIds(...)         ── HTTP ──► product-service   (price/name snapshot)
-  3. decrementStock(...)           ── HTTP ──► product-service   (atomic reserve)
-        └─ on shortage: 409/404, nothing decremented, checkout fails cleanly
+  2. getProductsByIds(...)         ── gRPC ──► product-service   (price/name snapshot)
+  3. decrementStock(...)           ── gRPC ──► product-service   (atomic reserve)
+        └─ on shortage: FAILED_PRECONDITION/NOT_FOUND, nothing decremented, fails cleanly
   4. prisma.$transaction:
         create Order + OrderItems, clear cart, write AuditLog   (atomic, local)
         └─ on failure AFTER step 3: restock(...) to compensate  (saga rollback)
@@ -113,10 +115,14 @@ POST /api/orders (gateway, auth) ──► shopping-service.checkout
 
 This is a **compensation-based saga**: stock is reserved in product-service first;
 if the local order transaction then fails, shopping-service issues a compensating
-`restock` call. Order status changes (`updateStatus`) and deletions (`deleteOrder`)
+`restock` call. Order status changes (`UpdateStatus`) and deletions (`DeleteOrder`)
 similarly restock on cancellation, exactly once per transition.
 
-The synchronous product HTTP client is [productClient.js](services/shopping-service/src/productClient.js).
+The synchronous product **gRPC** client is
+[productClient.js](services/shopping-service/src/productClient.js); it calls
+product-service's typed `BulkByIds` / `DecrementStock` / `Restock` RPCs and
+re-maps `FAILED_PRECONDITION → 409` / `NOT_FOUND → 404` so the checkout logic is
+unchanged. The contract is [product.proto](services/product-service/proto/product.proto).
 
 ---
 
@@ -173,7 +179,7 @@ shopping-service keeps a local `ProductProjection` table — a denormalised copy
 product-service's catalogue, updated purely by consuming `product.*` events. The
 heavy **analytics** queries
 ([analyticsController.js](services/shopping-service/src/controllers/analyticsController.js))
-read product data from this projection (with an HTTP fallback for not-yet-projected
+read product data from this projection (with a **gRPC** fallback for not-yet-projected
 ids) instead of calling product-service synchronously on every report.
 
 ### 5.5 Delivery guarantees & known trade-offs
@@ -238,19 +244,26 @@ no-ops). The cache is never a hard dependency.
 
 ---
 
-## 8. Request routing (gateway)
+## 8. Request routing (gateway — REST → gRPC)
 
-The gateway is a thin Express + `http-proxy-middleware` proxy with **no body
-parser** (bodies stream straight through). Path prefixes are rewritten by *adding*
-the service-local prefix (http-proxy-middleware v3 has already stripped the mount
-path):
+The gateway is an Express app that **parses the JSON body** (8 MB limit for
+base64 product images) and maps each REST route to a **gRPC** method on the right
+service. It forwards the JWT in gRPC metadata (`authorization`), translates the
+gRPC status back to an HTTP status, copies the service's `x-cache` trailing
+metadata into the `X-Cache` header, and restores the original success status
+(201 on create/checkout, 204 on delete). The client/translation layer is
+[grpcClients.js](gateway/src/grpcClients.js).
 
-| Gateway path     | Target service    | Rewritten to | Auth at gateway |
-|------------------|-------------------|--------------|-----------------|
-| `/api/users/*`   | user-service      | `/users/*`   | no (login/register are public) |
-| `/api/products/*`| product-service   | `/products/*`| no (catalogue is public) |
-| `/api/cart/*`    | shopping-service  | `/cart/*`    | **yes** |
-| `/api/orders/*`  | shopping-service  | `/orders/*`  | **yes** |
+| Gateway REST     | Target service    | gRPC method(s)            | Auth at gateway |
+|------------------|-------------------|---------------------------|-----------------|
+| `/api/users/*`   | user-service      | `UserService.*`           | no (services enforce; login/register public) |
+| `/api/products/*`| product-service   | `ProductService.*`        | no (catalogue is public) |
+| `/api/cart/*`    | shopping-service  | `ShoppingService.*`       | **yes** |
+| `/api/orders/*`  | shopping-service  | `ShoppingService.*`       | **yes** |
+
+gRPC → HTTP status mapping: `INVALID_ARGUMENT→400`, `UNAUTHENTICATED→401`,
+`PERMISSION_DENIED→403`, `NOT_FOUND→404`, `ALREADY_EXISTS`/`FAILED_PRECONDITION→409`,
+`UNAVAILABLE→503`, else `500`.
 
 ---
 
@@ -277,7 +290,9 @@ Schemas: [user](services/user-service/prisma/schema.prisma) ·
 ```
 .
 ├── docker-compose.yml          # full stack: DBs, Kafka, Redis, services, gateway, frontend
-├── gateway/                    # Express API gateway + JWT pre-check
+├── gateway/
+│   ├── proto/                  # user/product/shopping .proto (client side)
+│   └── src/                    # Express REST → gRPC translator + JWT pre-check + /ws
 ├── services/
 │   ├── user-service/           # auth, users, user stats        (user_db)
 │   ├── product-service/        # catalogue, stock, categories   (product_db)
@@ -288,20 +303,23 @@ Schemas: [user](services/user-service/prisma/schema.prisma) ·
 Each service:
 ```
 service/
+├── proto/                      # this service's gRPC contract (.proto)
 ├── prisma/
 │   ├── schema.prisma
 │   └── seed.js
 ├── src/
-│   ├── index.js                # express bootstrap + connectBus/startConsumer
+│   ├── index.js                # gRPC server bootstrap + connectBus/startConsumer
 │   ├── prisma.js               # shared PrismaClient
 │   ├── cache.js                # (user & product) Redis cache-aside
 │   ├── audit.js                # (product & shopping) audit-log writer
 │   ├── events/
 │   │   ├── bus.js              # Kafka connect/publish/consume
 │   │   └── handlers.js         # inbound event handlers
-│   ├── routes/
-│   ├── controllers/
-│   └── middleware/auth.js      # JWT verify + role guard
+│   └── grpc/
+│       ├── server.js           # bind the gRPC server
+│       ├── handlers.js         # RPC implementations (business logic)
+│       ├── auth.js             # JWT-from-metadata verify + role guard
+│       └── load.js             # proto loader
 ├── Dockerfile
 └── package.json
 ```
@@ -313,7 +331,8 @@ service/
 | Pattern | Where |
 |---------|-------|
 | Microservices, DB-per-service | 3 services, 3 isolated Postgres DBs, no cross-DB FK |
-| API Gateway | `gateway/` — single entry, routing, JWT fast-fail |
+| gRPC service-to-service | all backend calls (gateway→service, shopping→product) over gRPC + Protobuf |
+| API Gateway | `gateway/` — single entry, REST→gRPC translation, JWT fast-fail |
 | Saga (compensation) | checkout: reserve stock → compensate with restock on failure |
 | Message queue / broker | Kafka (KRaft), one topic per event type |
 | Event-driven design | domain events drive projections, counters, cache busts |
@@ -335,7 +354,8 @@ service/
 | `REDIS_URL`, `REDIS_PASSWORD` | user + product | cache store |
 | `CACHE_TTL_SECONDS` | user | user-list cache TTL (60s) |
 | `PRODUCT_CACHE_TTL_SECONDS` | product | product-list cache TTL (30s) |
-| `PRODUCT_SERVICE_URL` | shopping | synchronous checkout calls |
-| `*_SERVICE_URL` | gateway | proxy targets |
-| `NEXT_PUBLIC_API_URL` | frontend | gateway URL for the browser |
+| `GRPC_PORT` | each service | port the service's gRPC server binds (50051/50052/50053) |
+| `PRODUCT_GRPC_ADDR` | shopping | product-service gRPC target (checkout saga) |
+| `USER_GRPC_ADDR`, `PRODUCT_GRPC_ADDR`, `SHOPPING_GRPC_ADDR` | gateway | gRPC targets |
+| `NEXT_PUBLIC_API_URL` | frontend | gateway REST URL for the browser |
 ```

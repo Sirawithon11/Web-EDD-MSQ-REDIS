@@ -12,9 +12,26 @@
 // createMany doesn't return ids, orders are inserted in chunks and the ids of
 // each chunk are read back (ascending == insertion order) to attach items.
 const { PrismaClient } = require("@prisma/client");
+const grpc = require("@grpc/grpc-js");
+const { load } = require("../src/grpc/load");
 
 const prisma = new PrismaClient();
-const PRODUCT_SERVICE_URL = process.env.PRODUCT_SERVICE_URL || "http://localhost:4002";
+
+// gRPC client to product-service (same contract the running service uses).
+const PRODUCT_GRPC_ADDR = process.env.PRODUCT_GRPC_ADDR || "localhost:50052";
+const productProto = load("product.proto").product;
+const productClient = new productProto.ProductService(
+  PRODUCT_GRPC_ADDR,
+  grpc.credentials.createInsecure(),
+  { "grpc.max_receive_message_length": 16 * 1024 * 1024 }
+);
+function productList(query) {
+  return new Promise((resolve, reject) => {
+    productClient.List({ query: JSON.stringify(query) }, (err, res) =>
+      err ? reject(err) : resolve(JSON.parse(res.json || "{}"))
+    );
+  });
+}
 
 const STATUSES = ["PENDING", "PAID", "SHIPPED", "DELIVERED", "CANCELLED"];
 const NUM_USERS = Number(process.env.SEED_USERS || 100000);
@@ -36,14 +53,12 @@ async function insertBatches(model, rows) {
   }
 }
 
-// Page through the public catalog to collect a representative product sample.
+// Page through the public catalog (over gRPC) to collect a representative sample.
 async function fetchProductSample(want) {
   const out = [];
   let page = 1;
   while (out.length < want) {
-    const res = await fetch(`${PRODUCT_SERVICE_URL}/products?page=${page}&limit=100`);
-    if (!res.ok) throw new Error(`product-service returned ${res.status}`);
-    const json = await res.json();
+    const json = await productList({ page, limit: 100 });
     const rows = json.data || [];
     if (rows.length === 0) break;
     for (const p of rows) out.push({ id: p.id, name: p.name, price: Number(p.price) });
