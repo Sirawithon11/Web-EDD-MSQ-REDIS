@@ -359,3 +359,24 @@ service/
 | `USER_GRPC_ADDR`, `PRODUCT_GRPC_ADDR`, `SHOPPING_GRPC_ADDR` | gateway | gRPC targets |
 | `NEXT_PUBLIC_API_URL` | frontend | gateway REST URL for the browser |
 ```
+
+---
+
+## 13. Seeding the databases
+
+Seeding is **not** run automatically on container start (so data persists across
+restarts). Each service exposes an `npm run seed` script (`node prisma/seed.js`).
+Tables are created/synced by `prisma db push` on startup; run seed manually inside
+the running containers when you need sample data.
+
+Compose project name: `microandkafka` (passed via `-p`).
+
+```bash
+docker compose -p microandkafka exec product-service npm run seed
+docker compose -p microandkafka exec shopping-service npm run seed
+docker compose -p microandkafka exec user-service npm run seed
+```
+
+Seed sources: [user](services/user-service/prisma/seed.js) ·
+[product](services/product-service/prisma/seed.js) ·
+[shopping](services/shopping-service/prisma/seed.js).
