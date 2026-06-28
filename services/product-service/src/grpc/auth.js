@@ -7,7 +7,7 @@ const grpc = require("@grpc/grpc-js");
 function rpcError(code, message) {
   return Object.assign(new Error(message), { code });
 }
-
+// นำ JWT ที่เราส่งไปมากับอีกช่องทางหนึ่งมาตรวจสอบ
 // Returns the decoded JWT payload ({ id, email, role }) or null if absent/invalid.
 function getUser(call) {
   const md = call.metadata.get("authorization");

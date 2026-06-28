@@ -7,7 +7,7 @@ const protoLoader = require("@grpc/proto-loader");
 
 const MAX = 16 * 1024 * 1024; // product payloads can carry base64 images
 
-function load(file, pkg) {
+function load(file, pkg) { // function สำหรับอ่าน ไฟล์ .photo เพื่อสร้าง stub
   const def = protoLoader.loadSync(path.join(__dirname, "..", "proto", file), {
     keepCase: true,
     longs: String,
@@ -18,27 +18,24 @@ function load(file, pkg) {
   return grpc.loadPackageDefinition(def)[pkg];
 }
 
-const userProto = load("user.proto", "user");
+const userProto = load("user.proto", "user"); // สร้าง stub
 const productProto = load("product.proto", "product");
 const shoppingProto = load("shopping.proto", "shopping");
 
-const opts = { "grpc.max_receive_message_length": MAX, "grpc.max_send_message_length": MAX };
-const creds = grpc.credentials.createInsecure();
+const opts = { "grpc.max_receive_message_length": MAX, "grpc.max_send_message_length": MAX }; // config ข้อมูลที่จะส่งผ่าน gRPC
+const creds = grpc.credentials.createInsecure(); //ป้องกันการ hack การส่งข้อมูลผ่าน gRPC
 
-const userClient = new userProto.UserService(process.env.USER_GRPC_ADDR || "localhost:50051", creds, opts);
+const userClient = new userProto.UserService(process.env.USER_GRPC_ADDR || "localhost:50051", creds, opts); // นำ stub client เชื่อมกับ stub server
 const productClient = new productProto.ProductService(process.env.PRODUCT_GRPC_ADDR || "localhost:50052", creds, opts);
 const shoppingClient = new shoppingProto.ShoppingService(process.env.SHOPPING_GRPC_ADDR || "localhost:50053", creds, opts);
 
-// Build gRPC metadata, forwarding the caller's JWT so the service can re-verify it.
+// JWT จาก Rest ส่งผ่าน gRPC ผ่านทางนี้แทน
 function metaFrom(req) {
   const md = new grpc.Metadata();
   if (req.headers.authorization) md.set("authorization", req.headers.authorization);
   return md;
 }
 
-// Promisified unary call that also captures trailing metadata (used for X-Cache).
-// We settle on the `status` event (which carries the trailing metadata and fires
-// AFTER the response callback) so the trailers are always available.
 function unary(client, method, request, md) {
   return new Promise((resolve, reject) => {
     let response;
@@ -58,7 +55,7 @@ function unary(client, method, request, md) {
   });
 }
 
-// Map a gRPC status code to the HTTP status the browser used to get.
+//  นำ status code จาก gRPC เปลี่ยนเป็น status code ของ Rest ไป แสดงที่ Browser
 const STATUS_MAP = {
   [grpc.status.INVALID_ARGUMENT]: 400,
   [grpc.status.UNAUTHENTICATED]: 401,

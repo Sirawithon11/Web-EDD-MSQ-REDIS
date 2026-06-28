@@ -8,15 +8,15 @@ const handlers = require("./handlers");
 const MAX = 16 * 1024 * 1024;
 
 function startGrpcServer() {
-  const proto = load("product.proto").product;
-  const server = new grpc.Server({
+  const proto = load("product.proto").product; // สร้าง Stub จาก photobuff
+  const server = new grpc.Server({ // สร้าง gRPC server
     "grpc.max_receive_message_length": MAX,
     "grpc.max_send_message_length": MAX,
   });
-  server.addService(proto.ProductService.service, handlers);
+  server.addService(proto.ProductService.service, handlers); // นำ method ใน server ผูกกับ method จริงของ business code
 
   const addr = `0.0.0.0:${process.env.GRPC_PORT || 50052}`;
-  server.bindAsync(addr, grpc.ServerCredentials.createInsecure(), (err, port) => {
+  server.bindAsync(addr, grpc.ServerCredentials.createInsecure(), (err, port) => { // grpc server ผูก port 
     if (err) {
       console.error("gRPC bind failed:", err);
       process.exit(1);

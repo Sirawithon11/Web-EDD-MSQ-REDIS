@@ -19,6 +19,8 @@ package product;
 // Auth: the caller's JWT is passed in gRPC metadata `authorization: Bearer <jwt>`
 // (not in the message). Each handler re-verifies it, exactly like the old
 // per-service middleware did.
+
+
 service ProductService {
   // ---- gateway-facing (JSON-bodied; mirror the old REST routes) ----
   rpc List(JsonQuery) returns (JsonReply);            // GET /products

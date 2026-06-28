@@ -431,6 +431,74 @@ dependency ใหม่ (ทั้ง 3 service + gateway):
 | error | HTTP status ตรง ๆ | gRPC status → map เป็น HTTP ที่ gateway |
 | browser | REST (ไม่แก้) | REST (ไม่แก้) |
 
+---
+
+## 14. gRPC vs Kafka — ทั้งคู่คือการติดต่อระหว่าง service แล้วต่างกันยังไง?
+
+คำถามที่เจอบ่อย: "Kafka consume topic จาก service อื่นมาทำงานตาม logic ก็คือการติดต่อ
+ระหว่าง service เหมือนกัน แล้วทำไมไม่ใช้ gRPC ให้หมด?"
+
+ถูกต้อง — **ทั้งคู่คือการสื่อสารระหว่าง service** แต่มันคนละ "รูปแบบของ coupling"
+และโปรเจกต์นี้เลือกใช้ให้ตรงกับลักษณะงานแต่ละแบบ ไม่ใช่เพราะอันไหนดีกว่าอันไหน
+
+### สองรูปแบบของการสื่อสาร
+
+```
+ (A) SYNC — gRPC: "ฉันสั่งงานนาย แล้วฉันรอผลอยู่"
+     shopping ──คำขอ──►  product        shopping หยุดรอ จนกว่า product จะตอบ
+             ◄──ผลลัพธ์──             ถ้า product ล่ม → shopping พังตาม / ต้อง rollback
+
+ (B) ASYNC — Kafka: "ฉันแค่ประกาศว่าเกิดอะไรขึ้น ใครสนใจไปจัดการเอง"
+     shopping ──order.placed──► [ Kafka topic ] ──► product (อัปเดต salesCount)
+                                               └──► user    (อัปเดต ordersCount)
+     shopping ประกาศเสร็จก็ไปต่อทันที ไม่รู้ว่าใครฟัง ไม่รอ ไม่พังถ้าผู้ฟังล่ม
+```
+
+### เทียบกันตรง ๆ
+
+| ประเด็น | gRPC (sync request/response) | Kafka (async event) |
+|---------|------------------------------|---------------------|
+| ใครเริ่ม–ใครรอ | ผู้เรียก **รอผล** เพื่อตัดสินใจต่อ | ผู้ส่ง **ประกาศแล้วไปต่อ** ไม่รอ |
+| ต้อง online พร้อมกันไหม | **ใช่** — ปลายทางล่ม = ต้นทางพังด้วย | **ไม่** — ปลายทางล่ม event ค้างใน topic ไว้ก่อน |
+| ใครรู้จักใคร | ผู้เรียก**ต้องรู้จัก**ปลายทาง (เรียกตรง) | ผู้ส่ง**ไม่รู้จัก**ผู้ฟัง (ส่งเข้า topic) |
+| จำนวนผู้รับ | 1 ต่อ 1 | 1 ต่อหลาย (fan-out) — เพิ่มผู้ฟังได้โดยไม่แตะผู้ส่ง |
+| consistency | ทันที (strong) | ตามทีหลังเล็กน้อย (eventual) |
+| ถ้า error | ต้อง handle/rollback ทันที (saga) | retry + DLQ ในเบื้องหลัง ([bus.js](../services/shopping-service/src/events/bus.js)) |
+
+### โปรเจกต์นี้แบ่งงานยังไง
+
+| การสื่อสาร | ใช้ | ทำไม |
+|-----------|-----|------|
+| checkout: shopping → product (ตัด stock) | **gRPC** | ต้อง**รู้ผลทันที** (ของพอไหม?) เพื่อตัดสินใจสร้าง order หรือ reject — และถ้า DB พังต้อง `restock()` rollback ได้ (ดูหัวข้อ 5) |
+| order เกิดขึ้น → product (salesCount), user (ordersCount/totalSpent) | **Kafka** | เป็นแค่การ**ตามอัปเดตตัวเลข** ช้าไป 1 วิไม่เป็นไร, มี**หลายผู้ฟัง**, และ user-service ล่มไม่ควรไปขวางการสั่งซื้อ |
+| product เปลี่ยน → shopping (`ProductProjection` read model) | **Kafka** | เหมือนกัน — sync read model แบบ eventual ไม่ต้องให้ shopping รอ |
+
+### ทำไม "ไม่ควร" เปลี่ยนเคส projection เป็น gRPC
+
+ถ้าจับ `order.placed` ไปยิง gRPC หา product + user แทน Kafka จะเสีย 3 อย่าง:
+
+1. **Temporal coupling** — ถ้า user-service ล่มตอนนั้น การสร้าง order จะ**ล้มเหลวตามไปด้วย**
+   ทั้งที่การนับ order ของ user ไม่ควรไปขวางการสั่งซื้อเลย (Kafka: event ค้างไว้
+   พอ service กลับมาค่อย consume ที่ค้าง)
+2. **Coupling ของ dependency** — shopping จะ**ต้องรู้จัก**ว่ามีใครอยากได้ event นี้บ้าง
+   วันหลังเพิ่ม analytics-service ต้องกลับมาแก้โค้ด shopping (Kafka: ประกาศ topic เดียว
+   มีกี่ผู้ฟังก็ได้ ไม่ต้องแตะผู้ส่ง — ดูคอมเมนต์ [bus.js:5-7](../services/shopping-service/src/events/bus.js))
+3. **Fan-out** — 1 order ต้องอัปเดต 2 ที่ → gRPC ต้องยิง 2 call, รอ 2 ที่, handle error 2 แบบ
+   (Kafka: ประกาศครั้งเดียว ที่เหลือแยกกัน consume)
+
+### กฎตัดสินใจสั้น ๆ
+
+```
+ผู้เรียกต้อง "รอผล" เพื่อทำต่อ / ต้อง rollback ถ้าพลาด ?  ── ใช่ ──►  gRPC
+แค่ "แจ้งว่าเกิดอะไรขึ้น" / ปลายทางช้าได้ / มีหลายผู้ฟัง ?  ── ใช่ ──►  Kafka
+```
+
+> สรุป: gRPC = "ท่อ sync" (command/query บน critical path), Kafka = "ท่อ async"
+> (กระจาย event ไปอัปเดต read-model แบบ eventual) — โปรเจกต์ใช้ทั้งคู่คู่กัน ไม่ได้
+> ทดแทนกัน ดูฝั่ง Kafka เต็ม ๆ ที่ [kafka-structure.md](./kafka-structure.md)
+
+---
+
 > ดูภาพรวมสถาปัตยกรรมทั้งหมดได้ที่ [../ARCHITECTURE.md](../ARCHITECTURE.md) ·
 > ดู event/Kafka ที่ [kafka-structure.md](./kafka-structure.md) ·
 > ดู WebSocket ที่ [websocket-flow.md](./websocket-flow.md)
